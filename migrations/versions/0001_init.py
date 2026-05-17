@@ -5,6 +5,7 @@ Revises:
 Create Date: 2026-05-17
 
 """
+
 from collections.abc import Sequence
 
 import sqlalchemy as sa
@@ -29,15 +30,11 @@ def upgrade() -> None:
     op.create_table(
         "linked_accounts",
         sa.Column("id", sa.Integer, primary_key=True),
-        sa.Column(
-            "yandex_application_id", sa.String(128), nullable=False, unique=True
-        ),
+        sa.Column("yandex_application_id", sa.String(128), nullable=False, unique=True),
         sa.Column("user_id", sa.Integer, sa.ForeignKey("users.id"), nullable=False),
         sa.Column("linked_at", sa.DateTime, nullable=False),
     )
-    op.create_index(
-        "ix_linked_accounts_user_id", "linked_accounts", ["user_id"]
-    )
+    op.create_index("ix_linked_accounts_user_id", "linked_accounts", ["user_id"])
 
     op.create_table(
         "link_codes",
@@ -65,9 +62,7 @@ def upgrade() -> None:
         sa.Column("created_at", sa.DateTime, nullable=False),
         sa.Column("updated_at", sa.DateTime, nullable=False),
     )
-    op.create_index(
-        "ix_pending_session", "pending_requests", ["session_id"]
-    )
+    op.create_index("ix_pending_session", "pending_requests", ["session_id"])
     op.create_index(
         "ix_pending_status_updated", "pending_requests", ["status", "updated_at"]
     )
@@ -92,9 +87,7 @@ def upgrade() -> None:
     )
     op.create_index("ix_turn_log_ts", "turn_log", ["ts"])
     op.create_index("ix_turn_session_ts", "turn_log", ["session_id", "ts"])
-    op.create_index(
-        "ix_turn_appid_ts", "turn_log", ["yandex_application_id", "ts"]
-    )
+    op.create_index("ix_turn_appid_ts", "turn_log", ["yandex_application_id", "ts"])
 
 
 def downgrade() -> None:

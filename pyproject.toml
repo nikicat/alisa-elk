@@ -20,12 +20,24 @@ dev = [
     "pytest-asyncio>=0.25",
     "freezegun>=1.5",
     "httpx>=0.28",
+    "ruff>=0.8",
 ]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["app/tests"]
 filterwarnings = ["error", "ignore::DeprecationWarning"]
+
+[tool.ruff]
+line-length = 88
+target-version = "py314"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
+ignore = [
+    "E501",   # line length is handled by the formatter
+    "SIM108", # ternaries aren't always more readable than if/else
+]
 
 [tool.uv]
 package = false

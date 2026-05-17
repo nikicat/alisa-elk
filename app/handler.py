@@ -1,4 +1,5 @@
 import asyncio
+import contextlib
 import time
 import uuid
 from collections.abc import Callable
@@ -38,10 +39,9 @@ def _matches_any(command: str, words: frozenset[str]) -> bool:
         return False
     if n in words:
         return True
-    for w in words:
-        if n.startswith(w + " ") or n.endswith(" " + w) or f" {w} " in n:
-            return True
-    return False
+    return any(
+        n.startswith(w + " ") or n.endswith(" " + w) or f" {w} " in n for w in words
+    )
 
 
 def _make(
@@ -407,10 +407,8 @@ async def _handle_waiting(
     task = deps.registry.get(pending_id)
     if task is not None:
         timeout = float(cfg["llm"]["subsequent_wait_timeout_s"])
-        try:
+        with contextlib.suppress(Exception):
             await wait_for_or_keepalive(task, timeout)
-        except Exception:
-            pass
 
     with deps.session_factory() as db:
         pending = repo.get_pending(db, pending_id)

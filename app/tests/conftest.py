@@ -1,7 +1,5 @@
 """Pytest fixtures: in-memory SQLite, configured FastAPI app, MockLLM injection."""
 
-import os
-
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
@@ -16,7 +14,6 @@ from app.models import Base
 from app.tests.mock_alice import AliceSession
 from app.tests.mock_llm import MockLLMClient
 from app.wait import PendingTaskRegistry, reset_registry_for_tests
-
 
 TEST_SKILL_ID = "test-skill-id"
 TEST_WEBHOOK_SECRET = "test-secret"
@@ -84,9 +81,7 @@ def registry():
 
 @pytest.fixture
 def deps(session_factory, mock_llm, registry):
-    return HandlerDeps(
-        session_factory=session_factory, llm=mock_llm, registry=registry
-    )
+    return HandlerDeps(session_factory=session_factory, llm=mock_llm, registry=registry)
 
 
 @pytest.fixture
@@ -104,9 +99,7 @@ def app_client(monkeypatch, session_factory, mock_llm, registry):
             session_factory=session_factory, llm=mock_llm, registry=registry
         )
 
-    main_mod.app.dependency_overrides[main_mod.get_handler_deps] = (
-        fake_get_handler_deps
-    )
+    main_mod.app.dependency_overrides[main_mod.get_handler_deps] = fake_get_handler_deps
 
     with TestClient(main_mod.app) as client:
         yield client

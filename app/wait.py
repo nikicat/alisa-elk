@@ -47,14 +47,12 @@ def reset_registry_for_tests() -> None:
     _registry = PendingTaskRegistry()
 
 
-async def wait_for_or_keepalive(
-    task: asyncio.Task[Any], timeout: float
-) -> Any | None:
+async def wait_for_or_keepalive(task: asyncio.Task[Any], timeout: float) -> Any | None:
     """Wait up to `timeout` seconds. On timeout, return None — leave task running.
 
     `shield` is required: bare `wait_for` cancels the underlying task on timeout.
     """
     try:
         return await asyncio.wait_for(asyncio.shield(task), timeout=timeout)
-    except asyncio.TimeoutError:
+    except TimeoutError:
         return None

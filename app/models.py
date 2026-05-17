@@ -47,9 +47,7 @@ class LinkCode(Base):
         ForeignKey("users.id"), nullable=False, index=True
     )
     created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
-    expires_at: Mapped[datetime] = mapped_column(
-        DateTime, nullable=False, index=True
-    )
+    expires_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, index=True)
     used_at: Mapped[datetime | None] = mapped_column(DateTime)
     used_by_app_id: Mapped[str | None] = mapped_column(String(128))
 

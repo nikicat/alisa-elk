@@ -18,9 +18,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--user-id", type=int, help="Existing user id (skip user creation)"
     )
-    parser.add_argument(
-        "--ttl-minutes", type=int, default=15, help="Code lifetime"
-    )
+    parser.add_argument("--ttl-minutes", type=int, default=15, help="Code lifetime")
     args = parser.parse_args(argv)
 
     if args.user_id is None and args.name is None:

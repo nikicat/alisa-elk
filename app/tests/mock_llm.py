@@ -25,23 +25,23 @@ class MockLLMClient:
 
     # --- builders ---
 
-    def respond_instantly(self, text: str) -> "MockLLMClient":
+    def respond_instantly(self, text: str) -> MockLLMClient:
         self._behaviours.append(_Behaviour(0.0, text, None))
         return self
 
-    def respond_after(self, delay_s: float, text: str) -> "MockLLMClient":
+    def respond_after(self, delay_s: float, text: str) -> MockLLMClient:
         self._behaviours.append(_Behaviour(delay_s, text, None))
         return self
 
-    def raise_after(self, delay_s: float, exc: Exception) -> "MockLLMClient":
+    def raise_after(self, delay_s: float, exc: Exception) -> MockLLMClient:
         self._behaviours.append(_Behaviour(delay_s, None, exc))
         return self
 
-    def script(self, behaviours: list["_Behaviour"]) -> "MockLLMClient":
+    def script(self, behaviours: list[_Behaviour]) -> MockLLMClient:
         self._behaviours.extend(behaviours)
         return self
 
-    def set_default(self, text: str) -> "MockLLMClient":
+    def set_default(self, text: str) -> MockLLMClient:
         self._default = _Behaviour(0.0, text, None)
         return self
 
@@ -55,9 +55,7 @@ class MockLLMClient:
         temperature: float,
     ) -> LLMResult:
         self.calls.append(list(messages))
-        behaviour = (
-            self._behaviours.pop(0) if self._behaviours else self._default
-        )
+        behaviour = self._behaviours.pop(0) if self._behaviours else self._default
         if behaviour.delay_s > 0:
             await asyncio.sleep(behaviour.delay_s)
         if behaviour.raise_exc is not None:

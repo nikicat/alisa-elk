@@ -46,9 +46,7 @@ def create_link_code(db: Session, user_id: int, ttl_minutes: int = 15) -> str:
     return code
 
 
-def consume_link_code(
-    db: Session, code: str, application_id: str
-) -> User | None:
+def consume_link_code(db: Session, code: str, application_id: str) -> User | None:
     """Atomically claim the code and bind application_id to the user.
 
     Returns the User on success; None if the code is unknown/expired/used, or
@@ -186,9 +184,7 @@ def get_pending(db: Session, pending_id: str) -> PendingRequest | None:
     return db.get(PendingRequest, pending_id)
 
 
-def mark_pending_ready(
-    db: Session, pending_id: str, response_text: str
-) -> None:
+def mark_pending_ready(db: Session, pending_id: str, response_text: str) -> None:
     db.execute(
         update(PendingRequest)
         .where(PendingRequest.id == pending_id)
@@ -200,9 +196,7 @@ def mark_pending_ready(
     )
 
 
-def mark_pending_error(
-    db: Session, pending_id: str, error_text: str
-) -> None:
+def mark_pending_error(db: Session, pending_id: str, error_text: str) -> None:
     db.execute(
         update(PendingRequest)
         .where(PendingRequest.id == pending_id)
@@ -222,9 +216,7 @@ def mark_pending_aborted(db: Session, pending_id: str) -> None:
     )
 
 
-def bump_pending_wait_turns(
-    db: Session, pending_id: str, wait_turns: int
-) -> None:
+def bump_pending_wait_turns(db: Session, pending_id: str, wait_turns: int) -> None:
     db.execute(
         update(PendingRequest)
         .where(PendingRequest.id == pending_id)

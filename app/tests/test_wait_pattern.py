@@ -1,6 +1,5 @@
 """Wait-pattern tests: slow LLM keep-alive, да/нет flow, escalation, abort."""
 
-import asyncio
 import time
 
 import pytest
@@ -9,7 +8,6 @@ from app import config as cfg_mod
 from app import persona, repo
 from app.tests.mock_alice import AliceSession
 from app.tests.mock_llm import MockLLMClient
-
 
 FAST_CONFIG = {
     "llm": {
@@ -159,7 +157,9 @@ def test_llm_error_during_wait(alice, db, mock_llm: MockLLMClient):
     alice.assert_text_equals(persona.LLM_ERROR)
 
 
-def test_exit_while_waiting_cancels(alice, db, mock_llm: MockLLMClient, session_factory):
+def test_exit_while_waiting_cancels(
+    alice, db, mock_llm: MockLLMClient, session_factory
+):
     _setup_linked_user(db, alice)
     mock_llm.respond_after(60.0, "never")
     alice.say("вопрос")

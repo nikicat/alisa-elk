@@ -13,7 +13,6 @@ from app import persona, repo
 from app.tests.mock_alice import AliceSession
 from app.tests.mock_llm import MockLLMClient
 
-
 FAST_CONFIG = {
     "llm": {
         "temperature": 0.6,
@@ -188,9 +187,7 @@ def test_exit_during_wait_ends_session(alice, db, mock_llm: MockLLMClient):
     alice.assert_text_equals(persona.FAREWELL)
 
 
-def test_reset_intent_clears_history_and_persists(
-    alice, db, mock_llm: MockLLMClient
-):
+def test_reset_intent_clears_history_and_persists(alice, db, mock_llm: MockLLMClient):
     """User says "забудь всё" mid-dialog: the dialog stays open, the next
     LLM call sees no prior turns, and subsequent turns continue to filter
     pre-reset history without the handler having to re-emit context_since."""

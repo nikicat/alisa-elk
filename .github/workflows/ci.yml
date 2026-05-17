@@ -23,6 +23,12 @@ jobs:
       - name: Sync dependencies
         run: uv sync --frozen
 
+      - name: Lint (ruff check)
+        run: uv run ruff check .
+
+      - name: Format check (ruff format)
+        run: uv run ruff format --check .
+
       - name: Run tests
         run: uv run pytest -q
 

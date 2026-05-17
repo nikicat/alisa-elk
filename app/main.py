@@ -7,7 +7,7 @@ from fastapi import Depends, FastAPI, HTTPException, Path
 
 from app import repo
 from app.config import get_settings
-from app.db import init_engine, session_scope, get_session_factory
+from app.db import get_session_factory, init_engine, session_scope
 from app.handler import HandlerDeps, route
 from app.llm import OpenAIRouterClient
 from app.schemas import AliceRequest, AliceResponse

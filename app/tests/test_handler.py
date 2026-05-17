@@ -2,13 +2,10 @@
 
 from datetime import timedelta
 
-import pytest
-
 from app import persona, repo
 from app.linking import detect_code
 from app.pagination import chunk_for_alice
 from app.tests.mock_alice import AliceSession
-
 
 # ---------- helpers ----------
 
@@ -216,8 +213,10 @@ def test_consume_link_code_rejects_rebind_to_different_user(db):
     db.commit()
     assert rebind is None  # refused
     # And the original binding survives.
-    from app.models import LinkedAccount
     from sqlalchemy import select
+
+    from app.models import LinkedAccount
+
     bound = db.execute(
         select(LinkedAccount).where(
             LinkedAccount.yandex_application_id == "shared-device"

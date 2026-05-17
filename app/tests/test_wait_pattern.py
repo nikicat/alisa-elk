@@ -93,7 +93,7 @@ def test_yes_still_in_flight_escalates(alice, db, mock_llm: MockLLMClient):
     alice.assert_has_pending()
 
 
-def test_no_aborts_pending(alice, db, mock_llm: MockLLMClient, session_factory):
+def test_no_aborts_pending(alice, db, mock_llm: MockLLMClient, registry):
     _setup_linked_user(db, alice)
     mock_llm.respond_after(60.0, "irrelevant")
     alice.say("вопрос")
@@ -101,11 +101,11 @@ def test_no_aborts_pending(alice, db, mock_llm: MockLLMClient, session_factory):
     alice.say("нет")
     alice.assert_text_equals(persona.ABORT_OK)
     alice.assert_no_pending()
-    _yield(0.1)  # let cancellation propagate to _persist_result
-    with session_factory() as fresh_db:
-        row = repo.get_pending(fresh_db, pending_id)
-        assert row is not None
-        assert row.status == "aborted"
+    _yield(0.1)  # let cancellation reach the asyncio.Task
+    # Phase 2: cancellation is observable via the registry directly —
+    # the task is dropped, and the still-running asyncio.Task has been
+    # marked cancelled. No DB row to consult.
+    assert registry.get(pending_id) is None
 
 
 def test_new_question_while_waiting_cancels_old(alice, db, mock_llm: MockLLMClient):
@@ -158,7 +158,7 @@ def test_llm_error_during_wait(alice, db, mock_llm: MockLLMClient):
 
 
 def test_exit_while_waiting_cancels(
-    alice, db, mock_llm: MockLLMClient, session_factory
+    alice, db, mock_llm: MockLLMClient, registry
 ):
     _setup_linked_user(db, alice)
     mock_llm.respond_after(60.0, "never")
@@ -167,15 +167,8 @@ def test_exit_while_waiting_cancels(
     alice.say("хватит")
     alice.assert_end_session()
     alice.assert_text_equals(persona.FAREWELL)
-    # Give the cancel a moment to propagate to the background task.
-    _yield(0.1)
-    with session_factory() as fresh_db:
-        row = repo.get_pending(fresh_db, pending_id)
-        # Either explicitly aborted by _persist_result, or still in_progress
-        # if the cancellation hasn't yet propagated. Both are acceptable for
-        # the user-facing assertion above.
-        assert row is not None
-        assert row.status in ("aborted", "in_progress")
+    _yield(0.1)  # let cancellation reach the asyncio.Task
+    assert registry.get(pending_id) is None
 
 
 def test_startup_marks_orphaned_in_progress_as_error(db, session_factory):

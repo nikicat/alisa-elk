@@ -1,6 +1,6 @@
 # Handler → LangGraph migration plan
 
-**Status:** Phase 1 landed. Phase 2/3 still pending.
+**Status:** Phase 1 and Phase 2 landed. Phase 3 (keyword/table cleanup) pending.
 **Scope:** Replace the if/elif state machine in `app/handler.py:_route_inner`
 with a compiled LangGraph that owns dialog state. `route(req, deps)` stays
 as the public entry; only the internals change. First milestone: in-game
@@ -163,19 +163,49 @@ background task. Subsequent turns enter `waiting_node` via
   logs and existing test assertions stay readable. Cheap to remove
   later if the mirror grows stale.
 
-### Phase 2 — Slow path into the graph (~1-2 days)
+### Phase 2 — Slow path into the graph  ✅ done
 
-Convert `wait_for_or_keepalive` callsite into two graph nodes:
+The `pending_requests` table is out of the live request path entirely.
+The asyncio.Task parked in `PendingTaskRegistry` is now the only
+authority on whether a slow LLM call has produced a result, and
+`check_pending` reads `task.result()` directly the moment `task.done()`
+flips.
 
-- `dispatch_llm` — submits the task to `PendingTaskRegistry`, stores
-  `pending_id` in state, returns wait phrase.
-- `check_pending` — on subsequent turns, polls the registry; routes to
-  `apply_pending_result` if ready, back to next wait phrase if not.
+**What changed**
 
-After Phase 2, `pending_requests` either retires (LangGraph checkpoint
-covers the same data) or becomes audit-only. The
-`PendingTaskRegistry` itself stays — it's an in-process asyncio.Task
-registry that no checkpointer can replicate.
+- `idle_llm` slow path: drops `repo.create_pending` and the
+  `_persist_result` background coroutine. It snapshots
+  `(request_text, user_id, application_id, message_id, llm_started_at)`
+  into `DialogState.pending` and returns the first wait phrase. The
+  live `asyncio.Task` stays in `PendingTaskRegistry`.
+- `waiting_node` → `check_pending` (renamed for clarity; the routing
+  edge label is still `waiting` for diagram continuity). It polls
+  `deps.registry.get(pending_id)`, calls `wait_for_or_keepalive` on
+  the still-running task when the user says «да», and on
+  `task.done()` drains via `_apply_task_result` — which logs the turn,
+  paginates, and produces the response. Cancellation / exception /
+  `reset_context` tool calls are handled inline.
+- `_persist_result` and the `RESET_SENTINEL` are gone.
+- Orphan handling: if state has `pending_id` but the registry has no
+  task (process restart, or task already drained), `check_pending`
+  drops the ghost pending and recurses to the entry router so the
+  user's new input gets a fresh dispatch.
+
+**`pending_requests` status:** retired from the live request path.
+`mark_orphaned_in_progress_as_error` still runs on startup so any
+rows from earlier deployments get drained, but nothing new is
+written. Phase 3 will drop the table via Alembic.
+
+**Tests updated**
+
+- `test_wait_pattern.py::test_no_aborts_pending` and
+  `test_exit_while_waiting_cancels` now assert
+  `registry.get(pending_id) is None` instead of `pending_requests.row.status`.
+- `test_full_cycle.py::test_slow_llm_abort_with_no` and
+  `test_reset_while_pending_cancels_pending` switched the same way.
+- `test_startup_marks_orphaned_in_progress_as_error` kept unchanged —
+  the legacy cleanup still works on legacy rows.
+- All 59 tests pass.
 
 ### Phase 3 — Cleanup (~½ day)
 

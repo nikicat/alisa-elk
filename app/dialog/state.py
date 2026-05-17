@@ -24,6 +24,15 @@ from app.games.words import GameState
 class PendingState(TypedDict, total=False):
     pending_id: str
     wait_turns: int
+    # Snapshot of the original turn that fired the LLM task. We carry
+    # these forward so the eventual TurnLog row records the *original*
+    # request_text + user + message_id rather than the "да" follow-up
+    # that finally collects the result.
+    request_text: str
+    user_id: int | None
+    application_id: str
+    message_id: int
+    llm_started_at: float
 
 
 class CursorState(TypedDict, total=False):

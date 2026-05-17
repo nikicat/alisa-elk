@@ -151,7 +151,7 @@ def test_slow_llm_happy_ending(alice, db, mock_llm: MockLLMClient):
     alice.assert_no_pending()
 
 
-def test_slow_llm_abort_with_no(alice, db, mock_llm: MockLLMClient, session_factory):
+def test_slow_llm_abort_with_no(alice, db, mock_llm: MockLLMClient, registry):
     user = repo.create_user(db, display_name="Test")
     db.commit()
     code = repo.create_link_code(db, user.id)
@@ -166,10 +166,10 @@ def test_slow_llm_abort_with_no(alice, db, mock_llm: MockLLMClient, session_fact
     _timed_say(alice, "нет")
     alice.assert_text_equals(persona.ABORT_OK)
     time.sleep(0.1)
-    with session_factory() as fresh_db:
-        row = repo.get_pending(fresh_db, pending_id)
-        assert row is not None
-        assert row.status == "aborted"
+    # Phase 2: cancellation is visible via the registry — the task is
+    # dropped from the in-process registry and the asyncio.Task is
+    # cancelled. There is no DB row anymore.
+    assert registry.get(pending_id) is None
 
 
 def test_exit_during_wait_ends_session(alice, db, mock_llm: MockLLMClient):
@@ -343,7 +343,7 @@ def test_reset_intent_clears_history_and_persists(alice, db, mock_llm: MockLLMCl
 
 
 def test_reset_while_pending_cancels_pending(
-    alice, db, mock_llm: MockLLMClient, session_factory
+    alice, db, mock_llm: MockLLMClient, registry
 ):
     """Reset intent during an in-flight LLM call cancels the pending task,
     just like a "нет" abort would, but keeps the dialog open."""
@@ -363,7 +363,5 @@ def test_reset_while_pending_cancels_pending(
     assert alice.responses[-1]["response"].get("end_session") is not True
 
     time.sleep(0.1)
-    with session_factory() as fresh_db:
-        row = repo.get_pending(fresh_db, pending_id)
-        assert row is not None
-        assert row.status == "aborted"
+    # Phase 2: the task was cancelled and removed from the registry.
+    assert registry.get(pending_id) is None

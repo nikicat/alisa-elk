@@ -10,7 +10,7 @@ Topology, in priority order from `entry_router`:
   exit_words   → exit_skill_node    (cancels any pending)
   help_words   → help_node
   reset_words  → reset_context_node (cancels any pending)
-  pending      → waiting_node       (may recurse to entry_router)
+  pending      → check_pending       (may recurse to entry_router)
   cursor+cont  → pagination_continue_node
   unlinked     → linking_node
   in_game      → words_classify_player_node → …
@@ -34,6 +34,7 @@ from langgraph.graph import END, START, StateGraph
 from app import persona
 from app.dialog.nodes import (
     _matches_any,
+    check_pending,
     enter_game_node,
     exit_skill_node,
     greeting_node,
@@ -44,7 +45,6 @@ from app.dialog.nodes import (
     reset_context_node,
     silence_node,
     turn_init,
-    waiting_node,
     words_bot_turn_node,
     words_classify_player_node,
     words_resolve_challenge_node,
@@ -117,7 +117,7 @@ def route_from_entry(
 
 
 def route_after_waiting(state: DialogState) -> Literal["recurse", "done"]:
-    """If waiting_node cleared pending without producing text, hand the
+    """If check_pending cleared pending without producing text, hand the
     same turn back to entry_router so the idle path can run."""
     if state.get("last_bot_text"):
         return "done"
@@ -172,7 +172,7 @@ def _assemble() -> StateGraph:
     g = StateGraph(DialogState)
     g.add_node("turn_init", turn_init)
     g.add_node("entry_router", _entry_router_node)
-    g.add_node("waiting", waiting_node)
+    g.add_node("waiting", check_pending)
     g.add_node("paginate", pagination_continue_node)
     g.add_node("linking", linking_node)
     g.add_node("greeting", greeting_node)

@@ -6,12 +6,12 @@ are passed through `config["configurable"]["deps"]` — LangGraph's
 standard slot for per-invocation context — so the compiled graph
 itself is stateless and shareable across all requests.
 
-The Phase 1 split keeps the slow-path machinery (pending_requests row
-+ wait-phrase escalation) intact: `idle_llm` is the dispatcher that
-either returns a fast-path reply, a wait phrase, or one of four
-short-circuit tool decisions; subsequent turns enter `waiting_node`
-when the previous turn left a `pending_id` in state. Phase 2 is what
-finally pulls the slow path into pure graph state.
+Phase 2 pulled the slow path off the `pending_requests` table: the
+`asyncio.Task` parked in `PendingTaskRegistry` is the only authority
+on whether a slow LLM call has produced a result. `idle_llm` snapshots
+the dispatch context into `pending` and returns a wait phrase;
+subsequent turns enter `check_pending`, which reads `task.result()`
+once `task.done()` flips.
 """
 
 from __future__ import annotations
@@ -41,11 +41,6 @@ if TYPE_CHECKING:
     from app.handler import HandlerDeps
 
 log = structlog.get_logger(__name__)
-
-# Sentinel stored in pending_requests.response_text when the slow-path
-# LLM call returned a reset_context tool call instead of text. The
-# waiting branch translates it into RESET_OK + context_since.
-RESET_SENTINEL = "__reset_context__"
 
 
 # ---------- helpers ----------
@@ -106,13 +101,17 @@ async def turn_init(state: DialogState, config: RunnableConfig) -> dict:
     }
 
 
-async def waiting_node(state: DialogState, config: RunnableConfig) -> dict:
-    """Slow-path follow-up turn: a previous turn left `pending_id` in state.
+async def check_pending(state: DialogState, config: RunnableConfig) -> dict:
+    """Slow-path follow-up: a previous turn left `pending_id` in state.
 
-    Polls the pending row + the in-process task. On affirmative
-    follow-up, waits a bit more (`subsequent_wait_timeout_s`). On
-    negative follow-up, cancels. Anything else cancels and recurses
-    fresh — the entry router will re-dispatch the new command.
+    Phase 2 moved result handoff out of `pending_requests` into the
+    `asyncio.Task` parked in `PendingTaskRegistry`. We read `task.result()`
+    once the task is done — no DB poll, no background persister.
+
+    On affirmative follow-up, wait a bit more (`subsequent_wait_timeout_s`).
+    On negative follow-up, cancel. Anything else cancels and recurses
+    fresh — the entry router will re-dispatch the new command. Process
+    restart (registry empty after restart) is treated as orphan-recurse.
     """
     deps = _deps(config)
     cfg = config_mod.get_config()
@@ -120,14 +119,11 @@ async def waiting_node(state: DialogState, config: RunnableConfig) -> dict:
     pending = state.get("pending") or {}
     pending_id = pending.get("pending_id")
     wait_turns = int(pending.get("wait_turns", 1))
-    assert pending_id is not None, "waiting_node entered without pending_id"
+    assert pending_id is not None, "check_pending entered without pending_id"
 
     is_yes = _matches_any(command, persona.AFFIRMATIVE_WORDS)
     is_no = _matches_any(command, persona.NEGATIVE_WORDS)
     is_exit = _matches_any(command, persona.EXIT_WORDS)
-
-    with deps.session_factory() as db:
-        row = repo.get_pending(db, pending_id)
 
     # Exit during wait — end the dialog immediately.
     if is_exit:
@@ -138,54 +134,43 @@ async def waiting_node(state: DialogState, config: RunnableConfig) -> dict:
             "end_session": True,
         }
 
-    if row is None or row.status == "aborted":
-        deps.registry.discard(pending_id)
-        # Treat the input as a fresh command — the entry router will
-        # re-dispatch on this same turn via the `recurse` edge.
+    task = deps.registry.get(pending_id)
+    if task is None:
+        # Orphan (process restart, or task already drained): drop the
+        # ghost pending and let the router re-dispatch on this turn.
         return {"pending": None, "_recurse": True}
 
-    if row.status == "ready":
-        deps.registry.discard(pending_id)
-        return _ready_response(state, deps, row, cfg)
-
-    if row.status == "error":
-        deps.registry.discard(pending_id)
-        return {"pending": None, "last_bot_text": persona.LLM_ERROR}
-
-    # Still in_progress.
     if is_no:
-        deps.registry.cancel(pending_id)
+        if not task.done():
+            task.cancel()
+        deps.registry.discard(pending_id)
         return {"pending": None, "last_bot_text": persona.ABORT_OK}
 
     if not is_yes:
         # Treat as new question: cancel old, recurse fresh.
-        deps.registry.cancel(pending_id)
+        if not task.done():
+            task.cancel()
+        deps.registry.discard(pending_id)
         return {"pending": None, "_recurse": True}
 
-    # "да" → wait some more.
-    task = deps.registry.get(pending_id)
-    if task is not None:
+    # "да" → wait some more on the running task.
+    if not task.done():
         timeout = float(cfg["llm"]["subsequent_wait_timeout_s"])
         with contextlib.suppress(Exception):
             await wait_for_or_keepalive(task, timeout)
 
-    with deps.session_factory() as db:
-        row = repo.get_pending(db, pending_id)
-    if row is None:
-        return {"pending": None, "last_bot_text": persona.LLM_ERROR}
-    if row.status == "ready":
+    if task.done():
         deps.registry.discard(pending_id)
-        return _ready_response(state, deps, row, cfg)
-    if row.status == "error":
-        deps.registry.discard(pending_id)
-        return {"pending": None, "last_bot_text": persona.LLM_ERROR}
+        return _apply_task_result(state, pending, task, deps, cfg)
 
     # Still in progress: escalate or give up.
     next_wait_turns = wait_turns + 1
     max_turns = int(cfg["llm"]["max_wait_turns"])
     phrases: list[str] = cfg["persona"]["wait_phrases"]
     if next_wait_turns > max_turns:
-        deps.registry.cancel(pending_id)
+        if not task.done():
+            task.cancel()
+        deps.registry.discard(pending_id)
         log.warning(
             "llm_give_up",
             session_id=state.get("session_id"),
@@ -194,9 +179,6 @@ async def waiting_node(state: DialogState, config: RunnableConfig) -> dict:
         )
         return {"pending": None, "last_bot_text": cfg["persona"]["give_up_phrase"]}
     phrase = phrases[min(next_wait_turns - 1, len(phrases) - 1)]
-    with deps.session_factory() as db:
-        repo.bump_pending_wait_turns(db, pending_id, next_wait_turns)
-        db.commit()
     log.info(
         "llm_wait_phrase",
         path="escalate",
@@ -205,37 +187,81 @@ async def waiting_node(state: DialogState, config: RunnableConfig) -> dict:
         wait_turns=next_wait_turns,
     )
     return {
-        "pending": PendingState(pending_id=pending_id, wait_turns=next_wait_turns),
+        "pending": {**pending, "wait_turns": next_wait_turns},
         "last_bot_text": phrase,
     }
 
 
-def _ready_response(
+def _apply_task_result(
     state: DialogState,
+    pending: dict,
+    task: asyncio.Task[LLMResult],
     deps: HandlerDeps,
-    pending: Any,
     cfg: dict,
 ) -> dict:
-    if (pending.response_text or "") == RESET_SENTINEL:
+    """Drain a done task into a DialogState update. Errors / cancellations
+    surface as `persona.LLM_ERROR`; a `reset_context` tool call inside
+    the result is translated into a clean reset turn."""
+    pending_id = pending.get("pending_id")
+    session_id = state.get("session_id") or ""
+    try:
+        result = task.result()
+    except asyncio.CancelledError:
+        log.info(
+            "llm_task_cancelled",
+            session_id=session_id,
+            pending_id=pending_id,
+        )
+        return {"pending": None, "last_bot_text": persona.LLM_ERROR}
+    except Exception as exc:
+        log.warning(
+            "llm_task_error",
+            session_id=session_id,
+            pending_id=pending_id,
+            error=str(exc),
+        )
+        return {"pending": None, "last_bot_text": persona.LLM_ERROR}
+
+    if "reset_context" in result.tool_calls:
+        log.info(
+            "llm_reset_tool",
+            path="slow",
+            session_id=session_id,
+            pending_id=pending_id,
+        )
         return {
             "pending": None,
             "last_bot_text": persona.RESET_OK,
             "context_since": repo.utcnow().isoformat(),
         }
-    started_at = state.get("started_at") or time.monotonic()
+
+    log.info(
+        "llm_response",
+        path="slow",
+        response=result.text,
+        session_id=session_id,
+        pending_id=pending_id,
+    )
+
+    started_at = pending.get("llm_started_at") or state.get("started_at") or time.monotonic()
     total_ms = int((time.monotonic() - started_at) * 1000)
+    application_id = pending.get("application_id") or state.get("application_id") or ""
+    message_id = int(pending.get("message_id") or state.get("message_id") or 0)
+    request_text = pending.get("request_text") or ""
+    user_id = pending.get("user_id")
+
     with deps.session_factory() as db:
         chunk, next_cursor = _store_paginated(
             db,
-            response_text=pending.response_text or "",
-            user_id=pending.user_id,
-            application_id=state.get("application_id") or "",
-            session_id=state.get("session_id") or "",
-            message_id=int(state.get("message_id") or 0),
-            request_text=pending.request_text,
+            response_text=result.text,
+            user_id=user_id,
+            application_id=application_id,
+            session_id=session_id,
+            message_id=message_id,
+            request_text=request_text,
             total_ms=total_ms,
             llm_ms=None,
-            pending_request_id=pending.id,
+            pending_request_id=pending_id,
             chunk_chars=cfg["pagination"]["chunk_chars"],
         )
         db.commit()
@@ -246,6 +272,8 @@ def _ready_response(
     else:
         update["cursor"] = None
     return update
+
+
 
 
 def _store_paginated(
@@ -376,12 +404,12 @@ async def reset_context_node(state: DialogState, config: RunnableConfig) -> dict
 async def idle_llm(state: DialogState, config: RunnableConfig) -> dict:
     """Idle LLM dispatch: fast-path or wait-phrase handoff.
 
-    Mirrors the legacy handler block: one LLM call with the full
-    idle-tool surface bound. On a tool call we hand off to the matching
-    node via the routing layer; on a text response within the fast
-    window we persist the turn and return the chunk; on timeout we
-    persist a pending row, fire a background persister, and return the
-    first wait phrase.
+    Phase 2: the slow path no longer writes a `pending_requests` row or
+    fires a background persister — the live `asyncio.Task` parked in
+    `PendingTaskRegistry` is itself the result mailbox, and
+    `check_pending` reads `task.result()` directly on the follow-up
+    turn. The pending snapshot in `DialogState` is the only durable
+    state that survives a restart; the task itself does not.
     """
     deps = _deps(config)
     cfg = config_mod.get_config()
@@ -480,43 +508,9 @@ async def idle_llm(state: DialogState, config: RunnableConfig) -> dict:
             update["cursor"] = None
         return update
 
-    # Slow path: persist pending, fire wrapper, return wait phrase.
-    if user_id is None:
-        # Defensive: unlinked users never reach idle_llm in practice (the
-        # router sends them to linking_node), so this branch is dead
-        # code under the current topology. Kept as a safety net so a
-        # future router bug fails gracefully instead of crashing in
-        # repo.create_pending (which requires a user_id).
-        if not task.done():
-            task.cancel()
-        deps.registry.discard(new_pending_id)
-        return {"last_bot_text": persona.LLM_ERROR}
-    try:
-        with deps.session_factory() as db:
-            repo.create_pending(
-                db,
-                pending_id=new_pending_id,
-                user_id=user_id,
-                session_id=session_id,
-                request_text=command,
-                messages=messages,
-            )
-            db.commit()
-    except Exception as exc:
-        if not task.done():
-            task.cancel()
-        deps.registry.discard(new_pending_id)
-        log.warning("pending_create_failed", error=str(exc))
-        return {"last_bot_text": persona.LLM_ERROR}
-    asyncio.create_task(
-        _persist_result(
-            task,
-            new_pending_id,
-            deps.session_factory,
-            deps.registry,
-            session_id=session_id,
-        )
-    )
+    # Slow path: snapshot the dispatch context into state, leave the
+    # task in the registry, return a wait phrase. The next turn's
+    # `check_pending` reads `task.result()` directly.
     log.info(
         "llm_wait_phrase",
         path="first",
@@ -525,53 +519,17 @@ async def idle_llm(state: DialogState, config: RunnableConfig) -> dict:
         wait_turns=1,
     )
     return {
-        "pending": PendingState(pending_id=new_pending_id, wait_turns=1),
+        "pending": PendingState(
+            pending_id=new_pending_id,
+            wait_turns=1,
+            request_text=command,
+            user_id=user_id,
+            application_id=application_id,
+            message_id=message_id,
+            llm_started_at=started_at,
+        ),
         "last_bot_text": cfg["persona"]["wait_phrases"][0],
     }
-
-
-async def _persist_result(
-    task: asyncio.Task[LLMResult],
-    pending_id: str,
-    session_factory,
-    registry,
-    *,
-    session_id: str,
-) -> None:
-    try:
-        result = await task
-        is_reset = "reset_context" in result.tool_calls
-        stored_text = RESET_SENTINEL if is_reset else result.text
-        with session_factory() as db:
-            repo.mark_pending_ready(db, pending_id, stored_text)
-            db.commit()
-        if is_reset:
-            log.info(
-                "llm_reset_tool",
-                path="slow",
-                session_id=session_id,
-                pending_id=pending_id,
-            )
-        else:
-            log.info(
-                "llm_response",
-                path="slow",
-                response=result.text,
-                session_id=session_id,
-                pending_id=pending_id,
-            )
-    except asyncio.CancelledError:
-        with session_factory() as db:
-            repo.mark_pending_aborted(db, pending_id)
-            db.commit()
-        raise
-    except Exception as exc:
-        log.warning("llm_task_error", pending_id=pending_id, error=str(exc))
-        with session_factory() as db:
-            repo.mark_pending_error(db, pending_id, str(exc)[:500])
-            db.commit()
-    finally:
-        registry.discard(pending_id)
 
 
 # ---------- words subgraph nodes (wired via state.game) ----------

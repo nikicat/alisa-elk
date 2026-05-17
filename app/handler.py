@@ -3,6 +3,7 @@ import time
 import uuid
 from collections.abc import Callable
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Any
 
 import structlog
@@ -135,6 +136,16 @@ def _clear_session_state(req: AliceRequest, *keys: str) -> AliceRequest:
 
 
 async def route(req: AliceRequest, deps: HandlerDeps) -> AliceResponse:
+    """Public entry. Routes the request, then forwards context_since so the
+    user's "forget the conversation" intent persists across subsequent turns."""
+    context_since = req.state.session.get("context_since")
+    resp = await _route_inner(req, deps)
+    if context_since and not resp.response.end_session:
+        resp.session_state.setdefault("context_since", context_since)
+    return resp
+
+
+async def _route_inner(req: AliceRequest, deps: HandlerDeps) -> AliceResponse:
     started_at = time.monotonic()
     settings = config_mod.get_settings()
     cfg = config_mod.get_config()
@@ -157,6 +168,13 @@ async def route(req: AliceRequest, deps: HandlerDeps) -> AliceResponse:
     session_state: dict[str, Any] = dict(req.state.session)
     pending_id = session_state.get("pending_id")
     cursor = session_state.get("cursor")
+    context_since_raw = session_state.get("context_since")
+    context_since: datetime | None = None
+    if isinstance(context_since_raw, str):
+        try:
+            context_since = datetime.fromisoformat(context_since_raw)
+        except ValueError:
+            context_since = None
 
     # 2. Exit.
     if _matches_any(command, persona.EXIT_WORDS):
@@ -168,7 +186,16 @@ async def route(req: AliceRequest, deps: HandlerDeps) -> AliceResponse:
     if _matches_any(command, persona.HELP_WORDS):
         return _make(persona.HELP_TEXT)
 
-    # 4. WAITING state.
+    # 4. Reset conversation context (keep the dialog open).
+    if _matches_any(command, persona.RESET_WORDS):
+        if pending_id:
+            deps.registry.cancel(pending_id)
+        return _make(
+            persona.RESET_OK,
+            session_state={"context_since": repo.utcnow().isoformat()},
+        )
+
+    # 5. WAITING state.
     if pending_id:
         return await _handle_waiting(
             req=req,
@@ -182,7 +209,7 @@ async def route(req: AliceRequest, deps: HandlerDeps) -> AliceResponse:
             started_at=started_at,
         )
 
-    # 5. CONTINUATION state.
+    # 6. CONTINUATION state.
     if cursor and _matches_any(command, persona.CONTINUE_WORDS):
         with deps.session_factory() as db:
             turn = repo.get_turn(db, int(cursor["turn_id"]))
@@ -203,13 +230,13 @@ async def route(req: AliceRequest, deps: HandlerDeps) -> AliceResponse:
                 )
             return _make(chunk)
 
-    # 6. Resolve user — must come before code detection so a linked user
+    # 7. Resolve user — must come before code detection so a linked user
     #    dictating digits inside a question doesn't get hijacked into the
     #    link-code path.
     with deps.session_factory() as db:
         user = repo.get_user_by_app_id(db, application_id)
 
-    # 7. Reverse-code linking — only meaningful when the device isn't linked.
+    # 8. Reverse-code linking — only meaningful when the device isn't linked.
     if user is None:
         code = detect_code(original, req.request.nlu.tokens)
         if code:
@@ -225,7 +252,7 @@ async def route(req: AliceRequest, deps: HandlerDeps) -> AliceResponse:
         return _make(persona.UNLINKED_QUESTION)
     user_id = user.id
 
-    # 8. Greeting fallback.
+    # 9. Greeting fallback.
     if req.session.new and not command:
         return _make(persona.GREETING)
     if not command:
@@ -233,9 +260,11 @@ async def route(req: AliceRequest, deps: HandlerDeps) -> AliceResponse:
     if len(command) > 500:
         command = command[:500]
 
-    # 9. LLM dispatch.
+    # 10. LLM dispatch.
     with deps.session_factory() as db:
-        history = load_recent_turns(db, session_id, cfg["memory"]["recent_turns"])
+        history = load_recent_turns(
+            db, session_id, cfg["memory"]["recent_turns"], since=context_since
+        )
     messages = [
         {"role": "system", "content": persona.SYSTEM_PROMPT},
         *history,

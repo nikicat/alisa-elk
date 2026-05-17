@@ -137,20 +137,19 @@ def get_turn(db: Session, turn_id: int) -> TurnLog | None:
 
 
 def recent_turns(
-    db: Session, session_id: str, limit: int
+    db: Session,
+    session_id: str,
+    limit: int,
+    *,
+    since: datetime | None = None,
 ) -> list[TurnLog]:
     if limit <= 0:
         return []
-    rows = (
-        db.execute(
-            select(TurnLog)
-            .where(TurnLog.session_id == session_id)
-            .order_by(TurnLog.ts.desc())
-            .limit(limit)
-        )
-        .scalars()
-        .all()
-    )
+    stmt = select(TurnLog).where(TurnLog.session_id == session_id)
+    if since is not None:
+        stmt = stmt.where(TurnLog.ts > since)
+    stmt = stmt.order_by(TurnLog.ts.desc()).limit(limit)
+    rows = db.execute(stmt).scalars().all()
     return list(reversed(rows))
 
 

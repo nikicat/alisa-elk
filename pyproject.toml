@@ -41,3 +41,8 @@ ignore = [
 
 [tool.uv]
 package = false
+
+[tool.pyright]
+venvPath = "."
+venv = ".venv"
+pythonVersion = "3.14"

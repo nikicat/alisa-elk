@@ -186,3 +186,76 @@ def test_exit_during_wait_ends_session(alice, db, mock_llm: MockLLMClient):
     _timed_say(alice, "хватит")
     alice.assert_end_session()
     alice.assert_text_equals(persona.FAREWELL)
+
+
+def test_reset_intent_clears_history_and_persists(
+    alice, db, mock_llm: MockLLMClient
+):
+    """User says "забудь всё" mid-dialog: the dialog stays open, the next
+    LLM call sees no prior turns, and subsequent turns continue to filter
+    pre-reset history without the handler having to re-emit context_since."""
+    user = repo.create_user(db, display_name="Test")
+    db.commit()
+    code = repo.create_link_code(db, user.id)
+    db.commit()
+    repo.consume_link_code(db, code, alice.application_id)
+    db.commit()
+
+    mock_llm.respond_instantly("Осень — дрёма леса.")
+    mock_llm.respond_instantly("Свежая мысль.")
+    mock_llm.respond_instantly("Ещё одна мысль.")
+
+    _timed_say(alice, "что такое осень")
+    _timed_say(alice, "забудь всё")
+    alice.assert_text_equals(persona.RESET_OK)
+    # Dialog must remain open.
+    assert alice.responses[-1]["response"].get("end_session") is not True
+    # context_since lives in session_state so it survives across turns.
+    assert "context_since" in alice.last_session_state
+
+    _timed_say(alice, "новый вопрос")
+    second_messages = mock_llm.calls[1]
+    user_msgs = [m["content"] for m in second_messages if m["role"] == "user"]
+    asst_msgs = [m["content"] for m in second_messages if m["role"] == "assistant"]
+    assert "что такое осень" not in user_msgs
+    assert "Осень — дрёма леса." not in asst_msgs
+    assert user_msgs == ["новый вопрос"]
+    # The wrapper has to keep echoing context_since automatically.
+    assert "context_since" in alice.last_session_state
+
+    _timed_say(alice, "третий вопрос")
+    third_messages = mock_llm.calls[2]
+    user_msgs = [m["content"] for m in third_messages if m["role"] == "user"]
+    asst_msgs = [m["content"] for m in third_messages if m["role"] == "assistant"]
+    # Pre-reset turn still excluded.
+    assert "что такое осень" not in user_msgs
+    # Post-reset turn included.
+    assert "новый вопрос" in user_msgs
+    assert "Свежая мысль." in asst_msgs
+
+
+def test_reset_while_pending_cancels_pending(
+    alice, db, mock_llm: MockLLMClient, session_factory
+):
+    """Reset intent during an in-flight LLM call cancels the pending task,
+    just like a "нет" abort would, but keeps the dialog open."""
+    user = repo.create_user(db, display_name="Test")
+    db.commit()
+    code = repo.create_link_code(db, user.id)
+    db.commit()
+    repo.consume_link_code(db, code, alice.application_id)
+    db.commit()
+
+    mock_llm.respond_after(60.0, "never delivered")
+    _timed_say(alice, "очень сложный вопрос")
+    pending_id = alice.last_session_state["pending_id"]
+    _timed_say(alice, "начнём заново")
+    alice.assert_text_equals(persona.RESET_OK)
+    alice.assert_no_pending()
+    assert alice.responses[-1]["response"].get("end_session") is not True
+
+    time.sleep(0.1)
+    with session_factory() as fresh_db:
+        row = repo.get_pending(fresh_db, pending_id)
+        assert row is not None
+        assert row.status == "aborted"

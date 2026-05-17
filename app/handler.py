@@ -70,6 +70,8 @@ async def _persist_result(
     pending_id: str,
     session_factory: Callable[[], Session],
     registry: PendingTaskRegistry,
+    *,
+    session_id: str,
 ) -> None:
     """Await the LLM task; persist its outcome to the pending_requests row.
 
@@ -80,6 +82,13 @@ async def _persist_result(
         with session_factory() as db:
             repo.mark_pending_ready(db, pending_id, result.text)
             db.commit()
+        log.info(
+            "llm_response",
+            path="slow",
+            response=result.text,
+            session_id=session_id,
+            pending_id=pending_id,
+        )
     except asyncio.CancelledError:
         with session_factory() as db:
             repo.mark_pending_aborted(db, pending_id)
@@ -164,6 +173,15 @@ async def _route_inner(req: AliceRequest, deps: HandlerDeps) -> AliceResponse:
     application_id = req.session.application.application_id
     session_id = req.session.session_id
     message_id = req.session.message_id
+
+    if command:
+        log.info(
+            "user_phrase",
+            command=command,
+            session_id=session_id,
+            application_id=application_id,
+            message_id=message_id,
+        )
 
     session_state: dict[str, Any] = dict(req.state.session)
     pending_id = session_state.get("pending_id")
@@ -300,6 +318,13 @@ async def _route_inner(req: AliceRequest, deps: HandlerDeps) -> AliceResponse:
         deps.registry.discard(new_pending_id)
         llm_ms = int((time.monotonic() - llm_t0) * 1000)
         total_ms = int((time.monotonic() - started_at) * 1000)
+        log.info(
+            "llm_response",
+            path="fast",
+            response=result.text,
+            session_id=session_id,
+            llm_ms=llm_ms,
+        )
         with deps.session_factory() as db:
             chunk, next_cursor = _store_paginated(
                 db,
@@ -343,7 +368,13 @@ async def _route_inner(req: AliceRequest, deps: HandlerDeps) -> AliceResponse:
         log.warning("pending_create_failed", error=str(exc))
         return _make(persona.LLM_ERROR)
     asyncio.create_task(
-        _persist_result(task, new_pending_id, deps.session_factory, deps.registry)
+        _persist_result(
+            task,
+            new_pending_id,
+            deps.session_factory,
+            deps.registry,
+            session_id=session_id,
+        )
     )
     return _make(
         cfg["persona"]["wait_phrases"][0],

@@ -376,6 +376,13 @@ async def _route_inner(req: AliceRequest, deps: HandlerDeps) -> AliceResponse:
             session_id=session_id,
         )
     )
+    log.info(
+        "llm_wait_phrase",
+        path="first",
+        session_id=session_id,
+        pending_id=new_pending_id,
+        wait_turns=1,
+    )
     return _make(
         cfg["persona"]["wait_phrases"][0],
         session_state={"pending_id": new_pending_id, "wait_turns": 1},
@@ -467,11 +474,24 @@ async def _handle_waiting(
     phrases: list[str] = cfg["persona"]["wait_phrases"]
     if next_wait_turns > max_turns:
         deps.registry.cancel(pending_id)
+        log.warning(
+            "llm_give_up",
+            session_id=session_id,
+            pending_id=pending_id,
+            wait_turns=wait_turns,
+        )
         return _make(cfg["persona"]["give_up_phrase"])
     phrase = phrases[min(next_wait_turns - 1, len(phrases) - 1)]
     with deps.session_factory() as db:
         repo.bump_pending_wait_turns(db, pending_id, next_wait_turns)
         db.commit()
+    log.info(
+        "llm_wait_phrase",
+        path="escalate",
+        session_id=session_id,
+        pending_id=pending_id,
+        wait_turns=next_wait_turns,
+    )
     return _make(
         phrase,
         session_state={"pending_id": pending_id, "wait_turns": next_wait_turns},

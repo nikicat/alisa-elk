@@ -1,0 +1,31 @@
+[project]
+name = "alisa-elk"
+version = "0.1.0"
+description = "Yandex.Alisa skill: Мудрый Лось — LLM-backed wise-elk persona"
+requires-python = ">=3.14"
+dependencies = [
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.32",
+    "httpx>=0.28",
+    "sqlalchemy>=2.0",
+    "alembic>=1.14",
+    "pydantic>=2.10",
+    "pydantic-settings>=2.7",
+    "structlog>=24.4",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.3",
+    "pytest-asyncio>=0.25",
+    "freezegun>=1.5",
+    "httpx>=0.28",
+]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["app/tests"]
+filterwarnings = ["error", "ignore::DeprecationWarning"]
+
+[tool.uv]
+package = false

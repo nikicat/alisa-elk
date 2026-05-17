@@ -1,0 +1,20 @@
+[llm]
+temperature = 0.6
+max_tokens = 280
+first_wait_timeout_s = 3.2
+subsequent_wait_timeout_s = 3.2
+max_wait_turns = 3
+
+[persona]
+wait_phrases = [
+    "Надо подумать, подождёшь?",
+    "Очень сложный вопрос, подождёшь ещё?",
+    "Совсем заковыристо, потерпишь?",
+]
+give_up_phrase = "Лес сегодня молчит. Спроси чуть позже или о другом."
+
+[memory]
+recent_turns = 4
+
+[pagination]
+chunk_chars = 1000

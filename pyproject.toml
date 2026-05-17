@@ -21,6 +21,7 @@ dev = [
     "freezegun>=1.5",
     "httpx>=0.28",
     "ruff>=0.8",
+    "pyright>=1.1.409",
 ]
 
 [tool.pytest.ini_options]

@@ -54,6 +54,9 @@ class FakeChatLLM:
             )
         return self._responses.pop(0)
 
+    async def ainvoke(self, messages: list[Any]) -> AIMessage:
+        return self.invoke(messages)
+
 
 @pytest.fixture
 def fake_llm(monkeypatch):
@@ -103,8 +106,8 @@ def cfg(thread: str = "t") -> dict:
     return {"configurable": {"thread_id": thread}}
 
 
-def invoke(graph: Any, user_input: str, thread: str = "t") -> dict:
-    return graph.invoke(
+async def invoke(graph: Any, user_input: str, thread: str = "t") -> dict:
+    return await graph.ainvoke(
         cast(spike.DialogState, {"user_input": user_input}), config=cfg(thread)
     )
 
@@ -142,9 +145,9 @@ def no_tool_reply(text: str = "ход") -> AIMessage:
 # --------------------------------------------------------------- happy path
 
 
-def test_enter_game_picks_first_word_from_dictionary(fake_llm, small_dict, graph):
+async def test_enter_game_picks_first_word_from_dictionary(fake_llm, small_dict, graph):
     fake_llm([enter_game_call()])
-    result = invoke(graph, "давай поиграем в слова")
+    result = await invoke(graph, "давай поиграем в слова")
     assert result["game"] is not None
     assert result["game"]["used"]  # one bot word
     bot_first = result["game"]["used"][0]
@@ -157,12 +160,12 @@ def _state_game(graph) -> dict:
     return state["game"]
 
 
-def test_valid_player_move_advances_chain(fake_llm, graph):
+async def test_valid_player_move_advances_chain(fake_llm, graph):
     """Player word valid → classifier says no-tool → validate appends →
     bot picks deterministically from dictionary. Uses the real 554-word
     dictionary, which has follow-ups for every reachable letter."""
     fake_llm([enter_game_call(), no_tool_reply()])
-    invoke(graph, "давай поиграем")
+    await invoke(graph, "давай поиграем")
     bot_first = _state_game(graph)["used"][0]
     required = spike.required_start(bot_first)
     assert required is not None
@@ -176,7 +179,7 @@ def test_valid_player_move_advances_chain(fake_llm, graph):
         )
     player_word = candidates[0]
     next_required = spike.required_start(player_word)
-    result = invoke(graph, player_word)
+    result = await invoke(graph, player_word)
     used = result["game"]["used"]
     assert used[0] == bot_first
     assert used[1] == player_word
@@ -186,12 +189,12 @@ def test_valid_player_move_advances_chain(fake_llm, graph):
 
 
 @pytest.mark.usefixtures("small_dict")
-def test_player_wrong_letter_does_not_advance(fake_llm, graph):
+async def test_player_wrong_letter_does_not_advance(fake_llm, graph):
     fake_llm([
         enter_game_call(),
         no_tool_reply(),   # classifier: no tool, pass to validate
     ])
-    invoke(graph, "давай")
+    await invoke(graph, "давай")
     # Bot's first word starts with some letter L; player must answer with
     # L. We send something that almost certainly won't match (single char
     # not in any required letter we care about).
@@ -201,36 +204,36 @@ def test_player_wrong_letter_does_not_advance(fake_llm, graph):
     # Find a Cyrillic word starting with `bad_letter` (it's not in the
     # small_dict, but extract_word doesn't care; validate compares letters).
     fake_llm_again_msg = f"{bad_letter}нечто"
-    result = invoke(graph, fake_llm_again_msg)
+    result = await invoke(graph, fake_llm_again_msg)
     assert result["game"]["last_cheat"] == "wrong_letter"
     assert fake_llm_again_msg not in result["game"]["used"]
     assert f"начинаться на «{required}»" in result["last_bot_text"]
 
 
 @pytest.mark.usefixtures("small_dict")
-def test_player_repeat_does_not_advance(fake_llm, graph):
+async def test_player_repeat_does_not_advance(fake_llm, graph):
     fake_llm([
         enter_game_call(),
         no_tool_reply(),   # classifier when player repeats
     ])
-    invoke(graph, "давай")
+    await invoke(graph, "давай")
     bot_first = _state_game(graph)["used"][0]
-    result = invoke(graph, bot_first)   # echo the bot's word
+    result = await invoke(graph, bot_first)   # echo the bot's word
     assert result["game"]["last_cheat"] == "repeat"
     assert result["game"]["used"] == [bot_first]  # unchanged
     assert "уже было" in result["last_bot_text"]
 
 
 @pytest.mark.usefixtures("small_dict")
-def test_gibberish_does_not_advance_chain(fake_llm, graph):
+async def test_gibberish_does_not_advance_chain(fake_llm, graph):
     """Regression: gibberish must terminate at "не расслышал"."""
     fake_llm([
         enter_game_call(),
         no_tool_reply(),
     ])
-    invoke(graph, "давай")
+    await invoke(graph, "давай")
     used_before = list(_state_game(graph)["used"])
-    result = invoke(graph, "wow ???")
+    result = await invoke(graph, "wow ???")
     assert result["game"]["last_cheat"] == "no_word"
     assert result["game"]["used"] == used_before
     assert "не расслышал" in result["last_bot_text"]
@@ -240,33 +243,33 @@ def test_gibberish_does_not_advance_chain(fake_llm, graph):
 
 
 @pytest.mark.usefixtures("small_dict")
-def test_exit_via_classifier_ends_game(fake_llm, graph):
+async def test_exit_via_classifier_ends_game(fake_llm, graph):
     fake_llm([
         enter_game_call(),
         exit_game_call(),   # classifier emits exit_game
     ])
-    invoke(graph, "давай")
-    result = invoke(graph, "хватит играть")
+    await invoke(graph, "давай")
+    result = await invoke(graph, "хватит играть")
     assert result["game"] is None
     assert "заканчиваем" in result["last_bot_text"].lower()
 
 
 @pytest.mark.usefixtures("small_dict")
-def test_challenge_loses_when_bot_word_is_in_dictionary(fake_llm, graph):
+async def test_challenge_loses_when_bot_word_is_in_dictionary(fake_llm, graph):
     """Bot always picks dictionary words → an honest challenge always loses."""
     fake_llm([
         enter_game_call(),
         challenge_call(),   # classifier emits challenge_word
     ])
-    invoke(graph, "давай")
+    await invoke(graph, "давай")
     bot_first = _state_game(graph)["used"][0]
-    result = invoke(graph, "сомневаюсь, такого слова нет")
+    result = await invoke(graph, "сомневаюсь, такого слова нет")
     assert result["game"] is None  # game ended on resolve
     assert "Я выиграл" in result["last_bot_text"]
     assert bot_first in result["last_bot_text"]
 
 
-def test_challenge_wins_when_bot_word_is_not_in_dictionary(
+async def test_challenge_wins_when_bot_word_is_not_in_dictionary(
     fake_llm, monkeypatch, graph
 ):
     """If the bot somehow plays a word not in the dictionary (e.g., the
@@ -282,7 +285,7 @@ def test_challenge_wins_when_bot_word_is_not_in_dictionary(
         enter_game_call(),
         challenge_call(),
     ])
-    invoke(graph, "давай")
+    await invoke(graph, "давай")
     # Strip the bot's word from the dictionary
     bot_first = _state_game(graph)["used"][0]
     pruned = spike.WordDict(
@@ -293,7 +296,7 @@ def test_challenge_wins_when_bot_word_is_not_in_dictionary(
         all_words=fixture.all_words - {bot_first},
     )
     monkeypatch.setattr(spike, "_DICTIONARY_CACHE", pruned)
-    result = invoke(graph, "сомневаюсь")
+    result = await invoke(graph, "сомневаюсь")
     assert result["game"] is None
     assert "Твоя победа" in result["last_bot_text"]
     assert bot_first in result["last_bot_text"]
@@ -302,7 +305,7 @@ def test_challenge_wins_when_bot_word_is_not_in_dictionary(
 # --------------------------------------------------------------- bot exhaustion
 
 
-def test_bot_surrenders_when_no_words_left_for_letter(fake_llm, monkeypatch, graph):
+async def test_bot_surrenders_when_no_words_left_for_letter(fake_llm, monkeypatch, graph):
     """Player wins by exhausting bot's pool for the required letter."""
     # Tiny dictionary: only one 'м' word and one 'е' word. Player will
     # answer with a word ending in а letter where the bot has nothing.
@@ -321,7 +324,7 @@ def test_bot_surrenders_when_no_words_left_for_letter(fake_llm, monkeypatch, gra
         enter_game_call(),
         no_tool_reply(),  # player's word goes through validate
     ])
-    invoke(graph, "давай")
+    await invoke(graph, "давай")
     # Bot picked "море" or "ель"; force a chain dead-end by playing
     # something ending in a letter not in fixture.
     bot_first = _state_game(graph)["used"][0]
@@ -332,7 +335,7 @@ def test_bot_surrenders_when_no_words_left_for_letter(fake_llm, monkeypatch, gra
         player_word = "ехидна"   # starts 'е' (matches), ends 'а' → empty pool
     else:
         player_word = "лиса"     # starts 'л' (matches), ends 'а' → empty pool
-    result = invoke(graph, player_word)
+    result = await invoke(graph, player_word)
     assert result["game"] is None
     assert "Твоя победа" in result["last_bot_text"]
 
@@ -340,15 +343,15 @@ def test_bot_surrenders_when_no_words_left_for_letter(fake_llm, monkeypatch, gra
 # --------------------------------------------------------------- idle paths
 
 
-def test_idle_plain_reply_no_tool_call(fake_llm, graph):
+async def test_idle_plain_reply_no_tool_call(fake_llm, graph):
     fake_llm([AIMessage(content="Лес шумит, я слушаю.")])
-    result = invoke(graph, "что такое осень")
+    result = await invoke(graph, "что такое осень")
     assert result.get("game") is None
     assert result["last_bot_text"] == "Лес шумит, я слушаю."
 
 
-def test_exit_game_tool_call_outside_game_is_graceful(fake_llm, graph):
+async def test_exit_game_tool_call_outside_game_is_graceful(fake_llm, graph):
     fake_llm([exit_game_call()])
-    result = invoke(graph, "хватит")
+    result = await invoke(graph, "хватит")
     assert result.get("game") is None
     assert "не идёт" in result["last_bot_text"]

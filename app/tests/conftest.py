@@ -2,6 +2,7 @@
 
 import pytest
 from fastapi.testclient import TestClient
+from langgraph.checkpoint.memory import MemorySaver
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
@@ -9,6 +10,7 @@ from sqlalchemy.pool import StaticPool
 from app import config as cfg_mod
 from app import db as db_mod
 from app import main as main_mod
+from app.dialog.graph import build_parent_graph
 from app.handler import HandlerDeps
 from app.models import Base
 from app.tests.mock_alice import AliceSession
@@ -80,12 +82,23 @@ def registry():
 
 
 @pytest.fixture
-def deps(session_factory, mock_llm, registry):
-    return HandlerDeps(session_factory=session_factory, llm=mock_llm, registry=registry)
+def dialog_graph():
+    """Fresh compiled parent graph with an in-memory checkpointer per-test."""
+    return build_parent_graph(MemorySaver())
 
 
 @pytest.fixture
-def app_client(monkeypatch, session_factory, mock_llm, registry):
+def deps(session_factory, mock_llm, registry, dialog_graph):
+    return HandlerDeps(
+        session_factory=session_factory,
+        llm=mock_llm,
+        registry=registry,
+        graph=dialog_graph,
+    )
+
+
+@pytest.fixture
+def app_client(monkeypatch, session_factory, mock_llm, registry, dialog_graph):
     """FastAPI TestClient with mocked LLM, in-memory DB, isolated registry."""
 
     def fake_init_engine(db_url=None):  # noqa: ARG001
@@ -96,7 +109,10 @@ def app_client(monkeypatch, session_factory, mock_llm, registry):
 
     def fake_get_handler_deps() -> HandlerDeps:
         return HandlerDeps(
-            session_factory=session_factory, llm=mock_llm, registry=registry
+            session_factory=session_factory,
+            llm=mock_llm,
+            registry=registry,
+            graph=dialog_graph,
         )
 
     main_mod.app.dependency_overrides[main_mod.get_handler_deps] = fake_get_handler_deps

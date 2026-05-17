@@ -191,7 +191,7 @@ def make_llm(*, temperature: float, max_tokens: int) -> ChatOpenAI:
 # ---------------------------------------------------------------- nodes
 
 
-def idle_llm(state: DialogState) -> dict:
+async def idle_llm(state: DialogState) -> dict:
     """Persona reply with enter_game/exit_game tools bound."""
     llm = make_llm(temperature=0.6, max_tokens=160).bind_tools(IDLE_TOOLS)
     user = state.get("user_input") or ""
@@ -200,7 +200,7 @@ def idle_llm(state: DialogState) -> dict:
         *state.get("messages", []),
         HumanMessage(user),
     ]
-    reply: AIMessage = llm.invoke(msgs)
+    reply: AIMessage = await llm.ainvoke(msgs)
     update: dict = {
         "messages": [HumanMessage(user), reply],
         "user_input": None,
@@ -220,7 +220,7 @@ def idle_llm(state: DialogState) -> dict:
     return update
 
 
-def words_intro(state: DialogState) -> dict:
+async def words_intro(state: DialogState) -> dict:
     """Bot's first word — picked uniformly from the dictionary."""
     dictionary = load_dictionary()
     pool = sorted(dictionary.all_words)
@@ -234,7 +234,7 @@ def words_intro(state: DialogState) -> dict:
     }
 
 
-def words_classify_player(state: DialogState) -> dict:
+async def words_classify_player(state: DialogState) -> dict:
     """LLM-driven intent classifier.
 
     Looks at the player's message with [challenge_word, exit_game] tools
@@ -253,7 +253,7 @@ def words_classify_player(state: DialogState) -> dict:
         "закончить — вызови exit_game. Иначе считай, что он сделал свой "
         "ход в игре, и ничего не вызывай — просто ответь любым словом."
     )
-    reply = llm.invoke([sys_msg, HumanMessage(raw)])
+    reply = await llm.ainvoke([sys_msg, HumanMessage(raw)])
     tool_calls = getattr(reply, "tool_calls", None) or []
     name = tool_calls[0].get("name") if tool_calls else None
     game = state.get("game")
@@ -268,7 +268,7 @@ def words_classify_player(state: DialogState) -> dict:
     return {}  # pass-through to words_validate
 
 
-def words_resolve_challenge(state: DialogState) -> dict:
+async def words_resolve_challenge(state: DialogState) -> dict:
     """Look up the bot's last word in the dictionary; declare a winner."""
     game = state.get("game")
     assert game is not None
@@ -299,7 +299,7 @@ def words_resolve_challenge(state: DialogState) -> dict:
     }
 
 
-def words_validate(state: DialogState) -> dict:
+async def words_validate(state: DialogState) -> dict:
     """Pure chain-rule logic. Exit and challenge intents are handled
     upstream by `words_classify_player` via tool calls."""
     game = state["game"]
@@ -344,7 +344,7 @@ def words_validate(state: DialogState) -> dict:
     }
 
 
-def words_bot_turn(state: DialogState) -> dict:
+async def words_bot_turn(state: DialogState) -> dict:
     """Deterministic bot move — pick any unused dictionary word starting
     with the required letter. If none remain, surrender (player wins)."""
     game = state["game"]
@@ -413,7 +413,7 @@ def route_after_classify(
 # ---------------------------------------------------------------- graph
 
 
-def _entry_router_node(state: DialogState) -> dict:  # noqa: ARG001
+async def _entry_router_node(state: DialogState) -> dict:  # noqa: ARG001
     return {}  # pass-through; routing decision happens on the edge
 
 
@@ -468,6 +468,18 @@ def build_for_studio():
     """Entrypoint for `langgraph dev` — the dev runtime supplies its own
     persistence layer, so we compile without a checkpointer."""
     return _assemble_graph().compile()
+
+
+def build_for_handler(checkpointer):
+    """Compile the standalone words graph using the parent handler's saver.
+
+    Phase 1 of the LangGraph migration uses this for the standalone CLI
+    and (eventually) any place that wants the spike graph wired to the
+    same persistence layer as the parent dialog graph. The parent graph
+    in `app/dialog/graph.py` does not embed this compiled subgraph — it
+    composes the words nodes directly to keep state-merging trivial.
+    """
+    return _assemble_graph().compile(checkpointer=checkpointer)
 
 
 # ---------------------------------------------------------------- CLI

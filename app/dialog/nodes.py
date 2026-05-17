@@ -29,7 +29,11 @@ from langchain_core.runnables import RunnableConfig
 from app import config as config_mod
 from app import persona, repo
 from app.dialog.state import CursorState, DialogState, PendingState
-from app.dialog.tools import IDLE_TOOLS_OPENAI
+from app.dialog.tools import (
+    IDLE_TOOLS_OPENAI,
+    PAGINATION_TOOLS_OPENAI,
+    WAIT_TOOLS_OPENAI,
+)
 from app.games import words as words_game
 from app.linking import detect_code
 from app.llm import LLMResult
@@ -50,19 +54,51 @@ def _deps(config: RunnableConfig) -> HandlerDeps:
     return config["configurable"]["deps"]  # type: ignore[index]
 
 
-def _normalize(text: str) -> str:
-    return text.strip().lower().replace("ё", "е")
+_WAIT_CLASSIFIER_SYSTEM = (
+    "Пользователь ждёт ответа на свой предыдущий вопрос. Реплика "
+    "пользователя — это короткий ответ на просьбу подождать. Определи "
+    "намерение: подождать ещё (wait_more), отменить текущий вопрос "
+    "(cancel_pending) или выйти из навыка (exit_skill). Если реплика "
+    "похожа на новый вопрос или непонятна — НЕ вызывай ни одного инструмента."
+)
+
+_PAGINATION_CLASSIFIER_SYSTEM = (
+    "Пользователь только что услышал часть длинного ответа и ему "
+    "предложили услышать продолжение. Определи намерение: услышать "
+    "следующую часть (continue_reading) или выйти из навыка (exit_skill). "
+    "Если это новый вопрос — НЕ вызывай ни одного инструмента."
+)
 
 
-def _matches_any(command: str, words: frozenset[str]) -> bool:
-    n = _normalize(command)
-    if not n:
-        return False
-    if n in words:
-        return True
-    return any(
-        n.startswith(w + " ") or n.endswith(" " + w) or f" {w} " in n for w in words
-    )
+async def _classify_intent(
+    deps: HandlerDeps,
+    command: str,
+    tools: list[dict],
+    system: str,
+) -> set[str]:
+    """Tiny LLM-tool classifier used by branches that have no idle dispatch.
+
+    Returns the set of tool names the model chose; an empty set means
+    'treat as a new question'. Temperature is zero and max_tokens is tight
+    so the call stays fast — this runs on every wait/pagination turn in
+    place of the old keyword frozensets.
+    """
+    cfg = config_mod.get_config()
+    messages = [
+        {"role": "system", "content": system},
+        {"role": "user", "content": command},
+    ]
+    try:
+        result = await deps.llm.complete(
+            messages,
+            max_tokens=cfg["llm"].get("classifier_max_tokens", 16),
+            temperature=0.0,
+            tools=tools,
+        )
+    except Exception as exc:
+        log.warning("classifier_error", error=str(exc))
+        return set()
+    return set(result.tool_calls)
 
 
 def _parse_context_since(raw: str | None) -> datetime | None:
@@ -108,10 +144,13 @@ async def check_pending(state: DialogState, config: RunnableConfig) -> dict:
     `asyncio.Task` parked in `PendingTaskRegistry`. We read `task.result()`
     once the task is done — no DB poll, no background persister.
 
-    On affirmative follow-up, wait a bit more (`subsequent_wait_timeout_s`).
-    On negative follow-up, cancel. Anything else cancels and recurses
-    fresh — the entry router will re-dispatch the new command. Process
-    restart (registry empty after restart) is treated as orphan-recurse.
+    Phase 3 replaced the AFFIRMATIVE/NEGATIVE/EXIT keyword frozensets
+    with an LLM-tool classifier (`wait_more` / `cancel_pending` /
+    `exit_skill`). Anything outside those three intents (including
+    classifier errors) cancels and recurses fresh — the entry router
+    will re-dispatch the new command. Process restart (registry empty
+    after restart) is treated as orphan-recurse without paying for the
+    classifier call.
     """
     deps = _deps(config)
     cfg = config_mod.get_config()
@@ -121,9 +160,19 @@ async def check_pending(state: DialogState, config: RunnableConfig) -> dict:
     wait_turns = int(pending.get("wait_turns", 1))
     assert pending_id is not None, "check_pending entered without pending_id"
 
-    is_yes = _matches_any(command, persona.AFFIRMATIVE_WORDS)
-    is_no = _matches_any(command, persona.NEGATIVE_WORDS)
-    is_exit = _matches_any(command, persona.EXIT_WORDS)
+    task = deps.registry.get(pending_id)
+    if task is None:
+        # Orphan (process restart, or task already drained): drop the
+        # ghost pending and let the router re-dispatch on this turn.
+        # Skip the classifier — there's nothing to wait for anyway.
+        return {"pending": None, "_recurse": True}
+
+    intents = await _classify_intent(
+        deps, command, WAIT_TOOLS_OPENAI, _WAIT_CLASSIFIER_SYSTEM
+    )
+    is_yes = "wait_more" in intents
+    is_no = "cancel_pending" in intents
+    is_exit = "exit_skill" in intents
 
     # Exit during wait — end the dialog immediately.
     if is_exit:
@@ -133,12 +182,6 @@ async def check_pending(state: DialogState, config: RunnableConfig) -> dict:
             "last_bot_text": persona.FAREWELL,
             "end_session": True,
         }
-
-    task = deps.registry.get(pending_id)
-    if task is None:
-        # Orphan (process restart, or task already drained): drop the
-        # ghost pending and let the router re-dispatch on this turn.
-        return {"pending": None, "_recurse": True}
 
     if is_no:
         if not task.done():
@@ -261,7 +304,6 @@ def _apply_task_result(
             request_text=request_text,
             total_ms=total_ms,
             llm_ms=None,
-            pending_request_id=pending_id,
             chunk_chars=cfg["pagination"]["chunk_chars"],
         )
         db.commit()
@@ -287,7 +329,6 @@ def _store_paginated(
     request_text: str,
     total_ms: int,
     llm_ms: int | None,
-    pending_request_id: str | None,
     chunk_chars: int,
 ) -> tuple[str, CursorState | None]:
     chunks = chunk_for_alice(response_text, chunk_chars=chunk_chars)
@@ -301,7 +342,6 @@ def _store_paginated(
         response_text=response_text,
         total_ms=total_ms,
         llm_ms=llm_ms,
-        pending_request_id=pending_request_id,
     )
     if len(chunks) == 1:
         return chunks[0], None
@@ -313,10 +353,27 @@ async def pagination_continue_node(
     state: DialogState,
     config: RunnableConfig,
 ) -> dict:
-    """Player asked for the next chunk of the previous response."""
+    """Player has a pagination cursor open. Classify their reply: the
+    `continue_reading` tool means 'next chunk', `exit_skill` ends the
+    session, anything else (or no tool) is treated as a fresh question —
+    we clear the cursor and recurse so the entry router can dispatch."""
     deps = _deps(config)
     cfg = config_mod.get_config()
     cursor = state.get("cursor") or {}
+    command = (state.get("user_input") or "").strip()
+
+    intents = await _classify_intent(
+        deps, command, PAGINATION_TOOLS_OPENAI, _PAGINATION_CLASSIFIER_SYSTEM
+    )
+    if "exit_skill" in intents:
+        return {
+            "cursor": None,
+            "last_bot_text": persona.FAREWELL,
+            "end_session": True,
+        }
+    if "continue_reading" not in intents:
+        return {"cursor": None, "_recurse": True}
+
     with deps.session_factory() as db:
         turn = repo.get_turn(db, int(cursor.get("turn_id", 0)))
     if turn is None:
@@ -496,7 +553,6 @@ async def idle_llm(state: DialogState, config: RunnableConfig) -> dict:
                 request_text=command,
                 total_ms=total_ms,
                 llm_ms=llm_ms,
-                pending_request_id=None,
                 chunk_chars=cfg["pagination"]["chunk_chars"],
             )
             db.commit()

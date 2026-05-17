@@ -32,21 +32,6 @@ HELP_TEXT = (
     "Если впервые — продиктуй шестизначный код привязки."
 )
 
-EXIT_WORDS: frozenset[str] = frozenset(
-    {"выход", "хватит", "стоп", "до свидания", "пока", "выйти"}
-)
-HELP_WORDS: frozenset[str] = frozenset(
-    {"помощь", "что ты умеешь", "как пользоваться", "что умеешь", "помоги"}
-)
-CONTINUE_WORDS: frozenset[str] = frozenset(
-    {"дальше", "ещё", "продолжай", "далее", "продолжи"}
-)
-AFFIRMATIVE_WORDS: frozenset[str] = frozenset(
-    {"да", "ага", "хорошо", "подожду", "жду", "конечно", "давай", "ладно"}
-)
-NEGATIVE_WORDS: frozenset[str] = frozenset(
-    {"нет", "отмени", "забудь", "не надо", "хватит уже"}
-)
 RESET_TOOL: dict = {
     "type": "function",
     "function": {
@@ -60,16 +45,3 @@ RESET_TOOL: dict = {
         "parameters": {"type": "object", "properties": {}},
     },
 }
-
-RESET_WORDS: frozenset[str] = frozenset(
-    {
-        "забудь",
-        "начнем заново",
-        "начнем сначала",
-        "сменим тему",
-        "новая тема",
-        "очисти память",
-        "забудь разговор",
-        "забудь все",
-    }
-)

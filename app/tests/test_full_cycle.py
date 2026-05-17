@@ -122,6 +122,9 @@ def test_pagination_full_cycle(alice, db, mock_llm: MockLLMClient):
     long_response = (". ".join(f"Часть {i}" for i in range(1, 200))) + "."
     assert len(long_response) > 1000
     mock_llm.respond_instantly(long_response)
+    # Phase 3: pagination cursor branch consults the LLM classifier
+    # instead of matching CONTINUE_WORDS literally.
+    mock_llm.call_tool_instantly("continue_reading")
 
     _timed_say(alice, "расскажи длинную сказку")
     assert "cursor" in alice.last_session_state
@@ -140,6 +143,7 @@ def test_slow_llm_happy_ending(alice, db, mock_llm: MockLLMClient):
     db.commit()
 
     mock_llm.respond_after(0.3, "Долгий, но мудрый ответ.")
+    mock_llm.call_tool_instantly("wait_more")  # classifier on "да"
 
     _timed_say(alice, "сложный вопрос")
     alice.assert_text_equals(FAST_CONFIG["persona"]["wait_phrases"][0])
@@ -160,6 +164,7 @@ def test_slow_llm_abort_with_no(alice, db, mock_llm: MockLLMClient, registry):
     db.commit()
 
     mock_llm.respond_after(60.0, "never delivered")
+    mock_llm.call_tool_instantly("cancel_pending")  # classifier on "нет"
 
     _timed_say(alice, "очень сложный вопрос")
     pending_id = alice.last_session_state["pending_id"]
@@ -181,6 +186,7 @@ def test_exit_during_wait_ends_session(alice, db, mock_llm: MockLLMClient):
     db.commit()
 
     mock_llm.respond_after(60.0, "never")
+    mock_llm.call_tool_instantly("exit_skill")  # classifier on "хватит"
     _timed_say(alice, "сложный вопрос")
     _timed_say(alice, "хватит")
     alice.assert_end_session()
@@ -209,9 +215,9 @@ def test_reset_tool_is_advertised_to_llm(alice, db, mock_llm: MockLLMClient):
 
 def test_slow_llm_tool_call_triggers_reset(alice, db, mock_llm: MockLLMClient):
     """If the reset_context tool call lands AFTER first_wait_timeout_s, the
-    persist worker writes a sentinel into the pending row; when the user
-    says "да" the waiting branch translates it into RESET_OK + context_since
-    instead of trying to chunk the sentinel as a literal answer."""
+    pending task drains on the next "да" turn — check_pending detects
+    the tool inside the LLM result and translates it into RESET_OK +
+    context_since instead of chunking the sentinel as a literal answer."""
     user = repo.create_user(db, display_name="Test")
     db.commit()
     code = repo.create_link_code(db, user.id)
@@ -222,6 +228,7 @@ def test_slow_llm_tool_call_triggers_reset(alice, db, mock_llm: MockLLMClient):
     mock_llm.respond_instantly("Зима — сон леса.")
     # Tool call arrives slowly (after the 0.1s first-wait window).
     mock_llm.call_tool_after(0.3, "reset_context")
+    mock_llm.call_tool_instantly("wait_more")  # classifier on "да"
     mock_llm.respond_instantly("Свежий ответ.")
 
     _timed_say(alice, "что такое зима")
@@ -229,7 +236,7 @@ def test_slow_llm_tool_call_triggers_reset(alice, db, mock_llm: MockLLMClient):
     alice.assert_text_equals(FAST_CONFIG["persona"]["wait_phrases"][0])
     alice.assert_has_pending()
 
-    time.sleep(0.4)  # let _persist_result write the sentinel
+    time.sleep(0.4)  # let the slow tool-call task finish
     _timed_say(alice, "да")
     alice.assert_text_equals(persona.RESET_OK)
     alice.assert_no_pending()
@@ -271,9 +278,10 @@ def test_llm_tool_call_triggers_reset(alice, db, mock_llm: MockLLMClient):
 
 
 def test_bare_zabud_triggers_reset(alice, db, mock_llm: MockLLMClient):
-    """Regression: a single-word "забудь" used to slip past RESET_WORDS
-    (which only had multi-word phrases) and reach the LLM, which would
-    role-play a "forget" reply without actually clearing context."""
+    """Phase 3: there is no RESET_WORDS shortcut anymore — "забудь" goes
+    through the idle LLM, which is expected to call the reset_context
+    tool. The handler still emits the canned RESET_OK reply and clears
+    context, regardless of how the model phrases its own response."""
     user = repo.create_user(db, display_name="Test")
     db.commit()
     code = repo.create_link_code(db, user.id)
@@ -282,18 +290,19 @@ def test_bare_zabud_triggers_reset(alice, db, mock_llm: MockLLMClient):
     db.commit()
 
     mock_llm.respond_instantly("Круг радиуса корень из пяти.")
+    mock_llm.call_tool_instantly("reset_context")  # idle_llm decision on "забудь"
     mock_llm.respond_instantly("Свежая мысль.")
 
     _timed_say(alice, "что такое окружность")
     _timed_say(alice, "забудь")
-    # Must be the canned reset reply, not an LLM completion.
     alice.assert_text_equals(persona.RESET_OK)
-    # And the LLM must not have been called for the reset turn.
-    assert len(mock_llm.calls) == 1
+    # Idle LLM was consulted (it chose the reset_context tool), so the
+    # call count is 2, not 1.
+    assert len(mock_llm.calls) == 2
 
     _timed_say(alice, "следующий вопрос")
-    second_messages = mock_llm.calls[1]
-    user_msgs = [m["content"] for m in second_messages if m["role"] == "user"]
+    last_messages = mock_llm.calls[-1]
+    user_msgs = [m["content"] for m in last_messages if m["role"] == "user"]
     assert "что такое окружность" not in user_msgs
     assert user_msgs == ["следующий вопрос"]
 
@@ -310,6 +319,7 @@ def test_reset_intent_clears_history_and_persists(alice, db, mock_llm: MockLLMCl
     db.commit()
 
     mock_llm.respond_instantly("Осень — дрёма леса.")
+    mock_llm.call_tool_instantly("reset_context")  # idle_llm on "забудь всё"
     mock_llm.respond_instantly("Свежая мысль.")
     mock_llm.respond_instantly("Ещё одна мысль.")
 
@@ -322,9 +332,10 @@ def test_reset_intent_clears_history_and_persists(alice, db, mock_llm: MockLLMCl
     assert "context_since" in alice.last_session_state
 
     _timed_say(alice, "новый вопрос")
-    second_messages = mock_llm.calls[1]
-    user_msgs = [m["content"] for m in second_messages if m["role"] == "user"]
-    asst_msgs = [m["content"] for m in second_messages if m["role"] == "assistant"]
+    # calls[0]=осень, calls[1]=забудь всё, calls[2]=новый вопрос.
+    third_call = mock_llm.calls[2]
+    user_msgs = [m["content"] for m in third_call if m["role"] == "user"]
+    asst_msgs = [m["content"] for m in third_call if m["role"] == "assistant"]
     assert "что такое осень" not in user_msgs
     assert "Осень — дрёма леса." not in asst_msgs
     assert user_msgs == ["новый вопрос"]
@@ -332,9 +343,9 @@ def test_reset_intent_clears_history_and_persists(alice, db, mock_llm: MockLLMCl
     assert "context_since" in alice.last_session_state
 
     _timed_say(alice, "третий вопрос")
-    third_messages = mock_llm.calls[2]
-    user_msgs = [m["content"] for m in third_messages if m["role"] == "user"]
-    asst_msgs = [m["content"] for m in third_messages if m["role"] == "assistant"]
+    fourth_call = mock_llm.calls[3]
+    user_msgs = [m["content"] for m in fourth_call if m["role"] == "user"]
+    asst_msgs = [m["content"] for m in fourth_call if m["role"] == "assistant"]
     # Pre-reset turn still excluded.
     assert "что такое осень" not in user_msgs
     # Post-reset turn included.
@@ -345,8 +356,10 @@ def test_reset_intent_clears_history_and_persists(alice, db, mock_llm: MockLLMCl
 def test_reset_while_pending_cancels_pending(
     alice, db, mock_llm: MockLLMClient, registry
 ):
-    """Reset intent during an in-flight LLM call cancels the pending task,
-    just like a "нет" abort would, but keeps the dialog open."""
+    """Reset intent during an in-flight LLM call cancels the pending task
+    and the dialog stays open. Phase 3: the wait classifier sees the
+    fresh utterance, finds no wait_more/cancel/exit match, so we cancel
+    the task and re-dispatch through idle_llm, which calls reset_context."""
     user = repo.create_user(db, display_name="Test")
     db.commit()
     code = repo.create_link_code(db, user.id)
@@ -355,6 +368,8 @@ def test_reset_while_pending_cancels_pending(
     db.commit()
 
     mock_llm.respond_after(60.0, "never delivered")
+    mock_llm.respond_instantly("classifier sees a new question")  # wait classifier
+    mock_llm.call_tool_instantly("reset_context")  # idle_llm after recurse
     _timed_say(alice, "очень сложный вопрос")
     pending_id = alice.last_session_state["pending_id"]
     _timed_say(alice, "начнём заново")

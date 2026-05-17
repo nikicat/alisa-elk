@@ -52,24 +52,6 @@ class LinkCode(Base):
     used_by_app_id: Mapped[str | None] = mapped_column(String(128))
 
 
-class PendingRequest(Base):
-    __tablename__ = "pending_requests"
-
-    id: Mapped[str] = mapped_column(String(32), primary_key=True)
-    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), nullable=False)
-    session_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
-    request_text: Mapped[str] = mapped_column(Text, nullable=False)
-    messages_json: Mapped[str] = mapped_column(Text, nullable=False)
-    status: Mapped[str] = mapped_column(String(16), nullable=False)
-    response_text: Mapped[str | None] = mapped_column(Text)
-    error_text: Mapped[str | None] = mapped_column(Text)
-    wait_turns: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
-    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
-    updated_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
-
-    __table_args__ = (Index("ix_pending_status_updated", "status", "updated_at"),)
-
-
 class TurnLog(Base):
     __tablename__ = "turn_log"
 
@@ -85,9 +67,6 @@ class TurnLog(Base):
     llm_output_tokens: Mapped[int | None] = mapped_column(Integer)
     llm_ms: Mapped[int | None] = mapped_column(Integer)
     total_ms: Mapped[int] = mapped_column(Integer, nullable=False)
-    pending_request_id: Mapped[str | None] = mapped_column(
-        ForeignKey("pending_requests.id")
-    )
 
     __table_args__ = (
         Index("ix_turn_session_ts", "session_id", "ts"),

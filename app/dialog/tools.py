@@ -60,6 +60,43 @@ HELP_TOOL: dict = {
     },
 }
 
+WAIT_MORE_TOOL: dict = {
+    "type": "function",
+    "function": {
+        "name": "wait_more",
+        "description": (
+            "Вызови, когда пользователь согласен подождать ответ ещё: "
+            "«да», «ага», «хорошо», «жду», «подожду», «конечно», «давай», «ладно»."
+        ),
+        "parameters": {"type": "object", "properties": {}},
+    },
+}
+
+CANCEL_PENDING_TOOL: dict = {
+    "type": "function",
+    "function": {
+        "name": "cancel_pending",
+        "description": (
+            "Вызови, когда пользователь отказывается ждать и хочет отменить "
+            "текущий вопрос, но не выйти из навыка: «нет», «отмени», «забудь», "
+            "«не надо»."
+        ),
+        "parameters": {"type": "object", "properties": {}},
+    },
+}
+
+CONTINUE_READING_TOOL: dict = {
+    "type": "function",
+    "function": {
+        "name": "continue_reading",
+        "description": (
+            "Вызови, когда пользователь просит продолжить предыдущий ответ: "
+            "«дальше», «ещё», «продолжай», «далее», «продолжи»."
+        ),
+        "parameters": {"type": "object", "properties": {}},
+    },
+}
+
 # Toolset advertised to the idle LLM dispatcher.
 # `reset_context` lives in `persona.RESET_TOOL` for historical reasons.
 IDLE_TOOLS_OPENAI: list[dict] = [
@@ -67,6 +104,20 @@ IDLE_TOOLS_OPENAI: list[dict] = [
     ENTER_GAME_TOOL,
     EXIT_SKILL_TOOL,
     HELP_TOOL,
+]
+
+# Classifier tool sets used by the wait and pagination branches. These
+# branches have no LLM dispatch of their own, so a focused classifier
+# call replaces the legacy keyword frozensets.
+WAIT_TOOLS_OPENAI: list[dict] = [
+    WAIT_MORE_TOOL,
+    CANCEL_PENDING_TOOL,
+    EXIT_SKILL_TOOL,
+]
+
+PAGINATION_TOOLS_OPENAI: list[dict] = [
+    CONTINUE_READING_TOOL,
+    EXIT_SKILL_TOOL,
 ]
 
 

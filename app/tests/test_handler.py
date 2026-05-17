@@ -128,16 +128,22 @@ def test_unlinked_user_with_question_gets_link_prompt(alice: AliceSession):
     alice.assert_text_equals(persona.UNLINKED_QUESTION)
 
 
-def test_help_command(alice: AliceSession, db, session_factory):
+def test_help_command(alice: AliceSession, db, session_factory, mock_llm):
+    """Phase 3: there is no HELP_WORDS shortcut; "помощь" reaches the idle
+    LLM, which is expected to call the `help` tool."""
     user_id = _make_test_user(db)
     _link(db, user_id, alice.application_id)
+    mock_llm.call_tool_instantly("help")
     alice.say("помощь")
     assert "Мудрый Лось" in alice.last_text
 
 
-def test_exit_command_ends_session(alice: AliceSession, db):
+def test_exit_command_ends_session(alice: AliceSession, db, mock_llm):
+    """Phase 3: there is no EXIT_WORDS shortcut; "хватит" reaches the idle
+    LLM, which is expected to call the `exit_skill` tool."""
     user_id = _make_test_user(db)
     _link(db, user_id, alice.application_id)
+    mock_llm.call_tool_instantly("exit_skill")
     alice.say("хватит")
     alice.assert_end_session()
     alice.assert_text_equals(persona.FAREWELL)

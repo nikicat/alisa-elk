@@ -1,4 +1,4 @@
-"""Parent dialog graph — Phase 1 of the LangGraph migration.
+"""Parent dialog graph.
 
 Composes the legacy handler's dispatch tree as a LangGraph state
 machine. Game nodes from `app.games.words` are embedded directly so
@@ -7,21 +7,19 @@ needing a nested subgraph compile.
 
 Topology, in priority order from `entry_router`:
 
-  exit_words   → exit_skill_node    (cancels any pending)
-  help_words   → help_node
-  reset_words  → reset_context_node (cancels any pending)
-  pending      → check_pending       (may recurse to entry_router)
-  cursor+cont  → pagination_continue_node
+  pending      → check_pending       (LLM classifies; may recurse)
+  cursor       → pagination_continue (LLM classifies; may recurse)
   unlinked     → linking_node
   in_game      → words_classify_player_node → …
   empty+new    → greeting_node
   empty        → silence_node
-  command      → idle_llm           (LLM dispatch with full tool surface)
+  command      → idle_llm            (LLM dispatch with full tool surface)
 
-After `idle_llm`, the LLM's tool choice routes to short-circuit nodes
-(reset_context_node / exit_skill_node / help_node / enter_game_node).
-A text or wait-phrase response leaves `last_bot_text` already set by
-`idle_llm` itself and falls through to END.
+Phase 3 dropped the EXIT/HELP/RESET/CONTINUE/AFFIRMATIVE/NEGATIVE
+keyword shortcuts; every intent now reaches an LLM dispatch. The idle
+LLM uses the full tool surface (`reset_context` / `exit_skill` /
+`help` / `enter_game`); the wait and pagination branches use focused
+classifier tool sets defined in `app.dialog.tools`.
 """
 
 from __future__ import annotations
@@ -31,9 +29,7 @@ from typing import Literal
 from langchain_core.runnables import RunnableConfig
 from langgraph.graph import END, START, StateGraph
 
-from app import persona
 from app.dialog.nodes import (
-    _matches_any,
     check_pending,
     enter_game_node,
     exit_skill_node,
@@ -79,9 +75,6 @@ def _unlinked(state: DialogState, config: RunnableConfig) -> bool:
 
 
 EntryTarget = Literal[
-    "exit",
-    "help",
-    "reset",
     "waiting",
     "paginate",
     "linking",
@@ -97,15 +90,9 @@ def route_from_entry(
     config: RunnableConfig,
 ) -> EntryTarget:
     command = (state.get("user_input") or "").strip()
-    if _matches_any(command, persona.EXIT_WORDS):
-        return "exit"
-    if _matches_any(command, persona.HELP_WORDS):
-        return "help"
-    if _matches_any(command, persona.RESET_WORDS):
-        return "reset"
     if _has_pending(state):
         return "waiting"
-    if _has_cursor(state) and _matches_any(command, persona.CONTINUE_WORDS):
+    if _has_cursor(state) and command:
         return "paginate"
     if _unlinked(state, config):
         return "linking"
@@ -116,9 +103,12 @@ def route_from_entry(
     return "idle"
 
 
-def route_after_waiting(state: DialogState) -> Literal["recurse", "done"]:
-    """If check_pending cleared pending without producing text, hand the
-    same turn back to entry_router so the idle path can run."""
+def route_after_branch(state: DialogState) -> Literal["recurse", "done"]:
+    """Shared post-branch router for `waiting` and `paginate`.
+
+    If the branch cleared its triggering state (pending/cursor) and
+    produced no user-facing text, hand the same turn back to
+    entry_router so the idle path can re-dispatch the user's command."""
     if state.get("last_bot_text"):
         return "done"
     return "recurse"
@@ -196,9 +186,6 @@ def _assemble() -> StateGraph:
         "entry_router",
         route_from_entry,
         {
-            "exit": "exit_skill",
-            "help": "help",
-            "reset": "reset_context",
             "waiting": "waiting",
             "paginate": "paginate",
             "linking": "linking",
@@ -210,7 +197,12 @@ def _assemble() -> StateGraph:
     )
     g.add_conditional_edges(
         "waiting",
-        route_after_waiting,
+        route_after_branch,
+        {"recurse": "entry_router", "done": END},
+    )
+    g.add_conditional_edges(
+        "paginate",
+        route_after_branch,
         {"recurse": "entry_router", "done": END},
     )
     g.add_conditional_edges(
@@ -242,7 +234,6 @@ def _assemble() -> StateGraph:
         "exit_skill",
         "help",
         "reset_context",
-        "paginate",
         "linking",
         "greeting",
         "silence",

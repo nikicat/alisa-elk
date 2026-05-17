@@ -1,6 +1,7 @@
 [llm]
 temperature = 0.6
 max_tokens = 280
+classifier_max_tokens = 16
 first_wait_timeout_s = 3.2
 subsequent_wait_timeout_s = 3.2
 max_wait_turns = 3

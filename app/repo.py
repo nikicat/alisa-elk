@@ -1,11 +1,10 @@
-import json
 import secrets
 from datetime import UTC, datetime, timedelta
 
 from sqlalchemy import select, update
 from sqlalchemy.orm import Session
 
-from app.models import LinkCode, LinkedAccount, PendingRequest, TurnLog, User
+from app.models import LinkCode, LinkedAccount, TurnLog, User
 
 
 def utcnow() -> datetime:
@@ -109,7 +108,6 @@ def log_turn(
     llm_ms: int | None = None,
     llm_input_tokens: int | None = None,
     llm_output_tokens: int | None = None,
-    pending_request_id: str | None = None,
 ) -> TurnLog:
     turn = TurnLog(
         ts=utcnow(),
@@ -123,7 +121,6 @@ def log_turn(
         llm_ms=llm_ms,
         llm_input_tokens=llm_input_tokens,
         llm_output_tokens=llm_output_tokens,
-        pending_request_id=pending_request_id,
     )
     db.add(turn)
     db.flush()
@@ -151,88 +148,3 @@ def recent_turns(
     return list(reversed(rows))
 
 
-# ---------- pending requests ----------
-
-
-def create_pending(
-    db: Session,
-    *,
-    pending_id: str,
-    user_id: int,
-    session_id: str,
-    request_text: str,
-    messages: list[dict],
-) -> PendingRequest:
-    now = utcnow()
-    row = PendingRequest(
-        id=pending_id,
-        user_id=user_id,
-        session_id=session_id,
-        request_text=request_text,
-        messages_json=json.dumps(messages, ensure_ascii=False),
-        status="in_progress",
-        wait_turns=1,
-        created_at=now,
-        updated_at=now,
-    )
-    db.add(row)
-    db.flush()
-    return row
-
-
-def get_pending(db: Session, pending_id: str) -> PendingRequest | None:
-    return db.get(PendingRequest, pending_id)
-
-
-def mark_pending_ready(db: Session, pending_id: str, response_text: str) -> None:
-    db.execute(
-        update(PendingRequest)
-        .where(PendingRequest.id == pending_id)
-        .values(
-            status="ready",
-            response_text=response_text,
-            updated_at=utcnow(),
-        )
-    )
-
-
-def mark_pending_error(db: Session, pending_id: str, error_text: str) -> None:
-    db.execute(
-        update(PendingRequest)
-        .where(PendingRequest.id == pending_id)
-        .values(
-            status="error",
-            error_text=error_text,
-            updated_at=utcnow(),
-        )
-    )
-
-
-def mark_pending_aborted(db: Session, pending_id: str) -> None:
-    db.execute(
-        update(PendingRequest)
-        .where(PendingRequest.id == pending_id)
-        .values(status="aborted", updated_at=utcnow())
-    )
-
-
-def bump_pending_wait_turns(db: Session, pending_id: str, wait_turns: int) -> None:
-    db.execute(
-        update(PendingRequest)
-        .where(PendingRequest.id == pending_id)
-        .values(wait_turns=wait_turns, updated_at=utcnow())
-    )
-
-
-def mark_orphaned_in_progress_as_error(db: Session) -> int:
-    """Called on startup. Pending requests with in-process tasks did not survive."""
-    result = db.execute(
-        update(PendingRequest)
-        .where(PendingRequest.status == "in_progress")
-        .values(
-            status="error",
-            error_text="process restart",
-            updated_at=utcnow(),
-        )
-    )
-    return result.rowcount or 0

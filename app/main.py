@@ -7,9 +7,8 @@ from fastapi import Depends, FastAPI, HTTPException, Path, Request
 from fastapi.responses import JSONResponse
 from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 
-from app import repo
 from app.config import get_settings
-from app.db import get_session_factory, init_engine, session_scope
+from app.db import get_session_factory, init_engine
 from app.dialog.graph import build_parent_graph
 from app.handler import HandlerDeps, route
 from app.llm import OpenAIRouterClient
@@ -55,11 +54,6 @@ async def lifespan(app: FastAPI):  # noqa: ARG001
     settings = get_settings()
     configure_logging(settings.LOG_LEVEL)
     init_engine()
-    with session_scope() as db:
-        cleared = repo.mark_orphaned_in_progress_as_error(db)
-        db.commit()
-    if cleared:
-        structlog.get_logger().info("startup_marked_orphans", count=cleared)
 
     async with AsyncExitStack() as stack:
         saver = await stack.enter_async_context(

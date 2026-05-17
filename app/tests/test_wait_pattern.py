@@ -73,6 +73,7 @@ def test_slow_llm_first_wait_phrase(alice, db, mock_llm: MockLLMClient):
 def test_yes_returns_ready_answer(alice, db, mock_llm: MockLLMClient):
     _setup_linked_user(db, alice)
     mock_llm.respond_after(0.2, "Лесная мудрость.")
+    mock_llm.call_tool_instantly("wait_more")  # classifier on "да"
     alice.say("вопрос")
     alice.assert_has_pending()
     # Let the LLM finish; then user agrees to wait.
@@ -86,6 +87,7 @@ def test_yes_still_in_flight_escalates(alice, db, mock_llm: MockLLMClient):
     _setup_linked_user(db, alice)
     # LLM never returns within test (long delay).
     mock_llm.respond_after(60.0, "irrelevant")
+    mock_llm.call_tool_instantly("wait_more")  # classifier on "да"
     alice.say("вопрос")
     alice.assert_text_equals(FAST_CONFIG["persona"]["wait_phrases"][0])
     alice.say("да")
@@ -96,6 +98,7 @@ def test_yes_still_in_flight_escalates(alice, db, mock_llm: MockLLMClient):
 def test_no_aborts_pending(alice, db, mock_llm: MockLLMClient, registry):
     _setup_linked_user(db, alice)
     mock_llm.respond_after(60.0, "irrelevant")
+    mock_llm.call_tool_instantly("cancel_pending")  # classifier on "нет"
     alice.say("вопрос")
     pending_id = alice.last_session_state["pending_id"]
     alice.say("нет")
@@ -111,6 +114,8 @@ def test_no_aborts_pending(alice, db, mock_llm: MockLLMClient, registry):
 def test_new_question_while_waiting_cancels_old(alice, db, mock_llm: MockLLMClient):
     _setup_linked_user(db, alice)
     mock_llm.respond_after(60.0, "first never returns")
+    # Classifier sees the second utterance — no matching tool, treated as new.
+    mock_llm.respond_instantly("classifier sees a new question")
     mock_llm.respond_instantly("Свежий ответ.")
     alice.say("первый вопрос")
     alice.assert_has_pending()
@@ -120,17 +125,16 @@ def test_new_question_while_waiting_cancels_old(alice, db, mock_llm: MockLLMClie
 
 
 def test_ne_prefix_does_not_abort_wait(alice, db, mock_llm: MockLLMClient):
-    """Saying something that starts with "не..." (e.g. "не понимаю") during
-    a wait must NOT be treated as a "нет" abort. Anything outside the
-    affirmative/negative sets gets treated as a fresh question."""
+    """Phase 3: the LLM classifier decides yes/no/exit/new during a wait
+    turn. "не понимаю" looks like neither a wait_more nor a cancel — the
+    classifier emits no tool, and the turn is dispatched as a fresh
+    question."""
     _setup_linked_user(db, alice)
     mock_llm.respond_after(60.0, "old question never returns")
+    mock_llm.respond_instantly("classifier treats this as new")
     mock_llm.respond_instantly("Новый ответ.")
     alice.say("первый вопрос")
     alice.assert_has_pending()
-    # "не понимаю" historically matched the bare "не" in NEGATIVE_WORDS and
-    # would cancel with ABORT_OK. Now it should fall through to a fresh
-    # LLM dispatch.
     alice.say("не понимаю что происходит")
     alice.assert_text_equals("Новый ответ.")
     alice.assert_no_pending()
@@ -139,6 +143,10 @@ def test_ne_prefix_does_not_abort_wait(alice, db, mock_llm: MockLLMClient):
 def test_max_wait_turns_gives_up(alice, db, mock_llm: MockLLMClient):
     _setup_linked_user(db, alice)
     mock_llm.respond_after(60.0, "never")
+    # One classifier "wait_more" per follow-up turn.
+    mock_llm.call_tool_instantly("wait_more")
+    mock_llm.call_tool_instantly("wait_more")
+    mock_llm.call_tool_instantly("wait_more")
     alice.say("вопрос")  # wait_phrases[0], wait_turns=1
     alice.say("да")  # wait_phrases[1], wait_turns=2
     alice.say("да")  # wait_phrases[2], wait_turns=3
@@ -150,6 +158,7 @@ def test_max_wait_turns_gives_up(alice, db, mock_llm: MockLLMClient):
 def test_llm_error_during_wait(alice, db, mock_llm: MockLLMClient):
     _setup_linked_user(db, alice)
     mock_llm.raise_after(0.2, RuntimeError("llm boom"))
+    mock_llm.call_tool_instantly("wait_more")  # classifier on "да"
     alice.say("вопрос")
     alice.assert_has_pending()
     _yield(0.4)
@@ -162,6 +171,7 @@ def test_exit_while_waiting_cancels(
 ):
     _setup_linked_user(db, alice)
     mock_llm.respond_after(60.0, "never")
+    mock_llm.call_tool_instantly("exit_skill")  # classifier on "хватит"
     alice.say("вопрос")
     pending_id = alice.last_session_state["pending_id"]
     alice.say("хватит")
@@ -169,25 +179,3 @@ def test_exit_while_waiting_cancels(
     alice.assert_text_equals(persona.FAREWELL)
     _yield(0.1)  # let cancellation reach the asyncio.Task
     assert registry.get(pending_id) is None
-
-
-def test_startup_marks_orphaned_in_progress_as_error(db, session_factory):
-    user = repo.create_user(db, display_name="Test")
-    db.commit()
-    repo.create_pending(
-        db,
-        pending_id="orphan1",
-        user_id=user.id,
-        session_id="s",
-        request_text="q",
-        messages=[],
-    )
-    db.commit()
-    # Simulate startup cleanup.
-    with session_factory() as fresh:
-        n = repo.mark_orphaned_in_progress_as_error(fresh)
-        fresh.commit()
-        assert n == 1
-        row = repo.get_pending(fresh, "orphan1")
-        assert row is not None
-        assert row.status == "error"

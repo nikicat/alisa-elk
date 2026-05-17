@@ -1,6 +1,6 @@
 # Handler → LangGraph migration plan
 
-**Status:** Phase 1 and Phase 2 landed. Phase 3 (keyword/table cleanup) pending.
+**Status:** Phase 1, Phase 2, and Phase 3 landed. Migration complete.
 **Scope:** Replace the if/elif state machine in `app/handler.py:_route_inner`
 with a compiled LangGraph that owns dialog state. `route(req, deps)` stays
 as the public entry; only the internals change. First milestone: in-game
@@ -207,14 +207,57 @@ written. Phase 3 will drop the table via Alembic.
   the legacy cleanup still works on legacy rows.
 - All 59 tests pass.
 
-### Phase 3 — Cleanup (~½ day)
+### Phase 3 — Cleanup  ✅ done
 
-- Remove `EXIT_WORDS`, `HELP_WORDS`, `RESET_WORDS`, `CONTINUE_WORDS`,
-  `AFFIRMATIVE_WORDS`, `NEGATIVE_WORDS` and the helpers that use them.
-- Remove `pending_requests` table if Phase 2 retired it (Alembic
-  migration).
-- Drop `MockLLMClient` if all tests have moved to the new fakes; keep
-  it otherwise.
+All six keyword frozensets (`EXIT_WORDS`, `HELP_WORDS`, `RESET_WORDS`,
+`CONTINUE_WORDS`, `AFFIRMATIVE_WORDS`, `NEGATIVE_WORDS`) and the
+`_matches_any` helper are gone. Every intent now reaches an LLM
+dispatch:
+
+- The **idle** path keeps the full tool surface (`reset_context` /
+  `exit_skill` / `help` / `enter_game`) from Phase 1.
+- The **wait** path (`check_pending`) calls a focused classifier with
+  `WAIT_TOOLS_OPENAI` = {`wait_more`, `cancel_pending`, `exit_skill`}.
+  Empty tool calls mean "treat as a new question": cancel the
+  in-flight task and recurse to `entry_router`. Orphan path (no task
+  in registry) skips the classifier entirely.
+- The **pagination** path (`pagination_continue_node`) calls a
+  classifier with `PAGINATION_TOOLS_OPENAI` = {`continue_reading`,
+  `exit_skill`}. Empty tool calls clear the cursor and recurse so
+  `entry_router` dispatches the new utterance through `idle_llm`.
+
+`config.toml` gained `llm.classifier_max_tokens = 16` so the
+classifier call stays cheap.
+
+`pending_requests` table dropped via Alembic revision `0002`. The
+revision also drops `turn_log.pending_request_id`. `repo.create_pending`
+/ `get_pending` / `mark_pending_*` / `bump_pending_wait_turns` /
+`mark_orphaned_in_progress_as_error` are gone; the lifespan no longer
+runs a startup sweeper. `app/models.py:PendingRequest` is gone.
+
+`MockLLMClient` is kept — it is the only LLM fake in use and every
+test file depends on it.
+
+**Deviations from the plan**
+
+- Decision #5 said "drop the regex shortcuts" and only named
+  EXIT/HELP/RESET. The Phase 3 punch list named all six. We confirmed
+  with the operator and went with the more aggressive option:
+  classifier calls on wait and pagination turns too. Tradeoff: ~1
+  extra LLM call per wait/pagination turn in exchange for removing the
+  last regex routing in the dispatch tree.
+
+**Tests updated**
+
+- Every test that drove a keyword shortcut now scripts an extra
+  classifier behavior (`call_tool_instantly("wait_more")` etc.).
+- `test_bare_zabud_triggers_reset` flipped its assertion: the LLM
+  *is* now called for "забудь" (it calls `reset_context`).
+- `test_startup_marks_orphaned_in_progress_as_error` deleted — the
+  sweeper is gone.
+- Index shifts in `test_reset_intent_clears_history_and_persists`
+  because "забудь всё" now consumes an idle_llm call.
+- All 58 tests pass.
 
 ## Risk surface
 

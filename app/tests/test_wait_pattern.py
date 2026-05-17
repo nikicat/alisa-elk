@@ -121,6 +121,23 @@ def test_new_question_while_waiting_cancels_old(alice, db, mock_llm: MockLLMClie
     alice.assert_no_pending()
 
 
+def test_ne_prefix_does_not_abort_wait(alice, db, mock_llm: MockLLMClient):
+    """Saying something that starts with "не..." (e.g. "не понимаю") during
+    a wait must NOT be treated as a "нет" abort. Anything outside the
+    affirmative/negative sets gets treated as a fresh question."""
+    _setup_linked_user(db, alice)
+    mock_llm.respond_after(60.0, "old question never returns")
+    mock_llm.respond_instantly("Новый ответ.")
+    alice.say("первый вопрос")
+    alice.assert_has_pending()
+    # "не понимаю" historically matched the bare "не" in NEGATIVE_WORDS and
+    # would cancel with ABORT_OK. Now it should fall through to a fresh
+    # LLM dispatch.
+    alice.say("не понимаю что происходит")
+    alice.assert_text_equals("Новый ответ.")
+    alice.assert_no_pending()
+
+
 def test_max_wait_turns_gives_up(alice, db, mock_llm: MockLLMClient):
     _setup_linked_user(db, alice)
     mock_llm.respond_after(60.0, "never")

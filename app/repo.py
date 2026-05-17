@@ -51,7 +51,10 @@ def consume_link_code(
 ) -> User | None:
     """Atomically claim the code and bind application_id to the user.
 
-    Returns the User on success; None if the code is unknown, expired, or used.
+    Returns the User on success; None if the code is unknown/expired/used, or
+    if the device is already linked to a *different* user (refusing silent
+    rebind protects shared family devices from being hijacked by anyone with
+    a fresh code).
     """
     now = utcnow()
     result = db.execute(
@@ -81,9 +84,13 @@ def consume_link_code(
                 linked_at=now,
             )
         )
-    else:
-        existing.user_id = user_id
+    elif existing.user_id == user_id:
+        # Same user re-linking the same device — just refresh the timestamp.
         existing.linked_at = now
+    else:
+        # Device already bound to a different user. Code is consumed (so it
+        # can't be replayed) but we refuse to rebind.
+        return None
     db.flush()
     return db.get(User, user_id)
 

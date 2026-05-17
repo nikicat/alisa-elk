@@ -3,7 +3,7 @@ from typing import Any
 
 
 class PendingTaskRegistry:
-    """In-process registry of background LLM tasks, keyed by session_id.
+    """In-process registry of background LLM tasks, keyed by pending_id.
 
     Single-process v1 only. For horizontal scaling, swap to a queue.
     """
@@ -11,17 +11,17 @@ class PendingTaskRegistry:
     def __init__(self) -> None:
         self._tasks: dict[str, asyncio.Task[Any]] = {}
 
-    def register(self, session_id: str, task: asyncio.Task[Any]) -> None:
-        self._tasks[session_id] = task
+    def register(self, pending_id: str, task: asyncio.Task[Any]) -> None:
+        self._tasks[pending_id] = task
 
-    def get(self, session_id: str) -> asyncio.Task[Any] | None:
-        return self._tasks.get(session_id)
+    def get(self, pending_id: str) -> asyncio.Task[Any] | None:
+        return self._tasks.get(pending_id)
 
-    def discard(self, session_id: str) -> None:
-        self._tasks.pop(session_id, None)
+    def discard(self, pending_id: str) -> None:
+        self._tasks.pop(pending_id, None)
 
-    def cancel(self, session_id: str) -> bool:
-        task = self._tasks.pop(session_id, None)
+    def cancel(self, pending_id: str) -> bool:
+        task = self._tasks.pop(pending_id, None)
         if task is None or task.done():
             return False
         task.cancel()

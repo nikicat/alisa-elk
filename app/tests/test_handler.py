@@ -189,6 +189,43 @@ def test_multi_turn_memory_passes_history(alice, db, mock_llm):
     assert user_messages[-1]["content"] == "а зима?"
 
 
+def test_linked_user_with_digits_in_question_does_not_link(alice, db, mock_llm):
+    """Once linked, dictating 6 digits inside a question must not trigger
+    the link-code path (the digits are part of the question, not a code)."""
+    user_id = _make_test_user(db)
+    _link(db, user_id, alice.application_id)
+    mock_llm.respond_instantly("Сто лет — это много, человек.")
+    alice.say("сколько было ему 482917 лет")
+    alice.assert_text_equals("Сто лет — это много, человек.")
+    assert len(mock_llm.calls) == 1
+
+
+def test_consume_link_code_rejects_rebind_to_different_user(db):
+    """A device already linked to user A cannot be silently rebound to user B
+    by anyone with a fresh code."""
+    user_a = repo.create_user(db, display_name="A")
+    user_b = repo.create_user(db, display_name="B")
+    db.commit()
+    code_a = repo.create_link_code(db, user_a.id)
+    code_b = repo.create_link_code(db, user_b.id)
+    db.commit()
+    first = repo.consume_link_code(db, code_a, "shared-device")
+    db.commit()
+    assert first is not None and first.id == user_a.id
+    rebind = repo.consume_link_code(db, code_b, "shared-device")
+    db.commit()
+    assert rebind is None  # refused
+    # And the original binding survives.
+    from app.models import LinkedAccount
+    from sqlalchemy import select
+    bound = db.execute(
+        select(LinkedAccount).where(
+            LinkedAccount.yandex_application_id == "shared-device"
+        )
+    ).scalar_one()
+    assert bound.user_id == user_a.id
+
+
 def test_pagination_long_response_chunks(alice, db, mock_llm):
     user_id = _make_test_user(db)
     _link(db, user_id, alice.application_id)

@@ -203,21 +203,23 @@ async def route(req: AliceRequest, deps: HandlerDeps) -> AliceResponse:
                 )
             return _make(chunk)
 
-    # 6. Reverse-code linking.
-    code = detect_code(original, req.request.nlu.tokens)
-    if code:
-        with deps.session_factory() as db:
-            user = repo.consume_link_code(db, code, application_id)
-            if user is not None:
-                db.commit()
-                return _make(persona.LINK_OK)
-            db.rollback()
-            return _make(persona.LINK_BAD)
-
-    # 7. Resolve user.
+    # 6. Resolve user — must come before code detection so a linked user
+    #    dictating digits inside a question doesn't get hijacked into the
+    #    link-code path.
     with deps.session_factory() as db:
         user = repo.get_user_by_app_id(db, application_id)
+
+    # 7. Reverse-code linking — only meaningful when the device isn't linked.
     if user is None:
+        code = detect_code(original, req.request.nlu.tokens)
+        if code:
+            with deps.session_factory() as db:
+                linked = repo.consume_link_code(db, code, application_id)
+                if linked is not None:
+                    db.commit()
+                    return _make(persona.LINK_OK)
+                db.rollback()
+                return _make(persona.LINK_BAD)
         if req.session.new and not command:
             return _make(persona.UNLINKED_GREETING)
         return _make(persona.UNLINKED_QUESTION)
@@ -256,6 +258,13 @@ async def route(req: AliceRequest, deps: HandlerDeps) -> AliceResponse:
         deps.registry.discard(new_pending_id)
         log.warning("llm_first_call_error", error=str(exc))
         return _make(persona.LLM_ERROR)
+    except BaseException:
+        # ASGI cancellation (client disconnect, shutdown). The shielded task
+        # would otherwise keep burning tokens with no consumer.
+        if not task.done():
+            task.cancel()
+        deps.registry.discard(new_pending_id)
+        raise
 
     if result is not None:
         # Fast path.
@@ -285,16 +294,25 @@ async def route(req: AliceRequest, deps: HandlerDeps) -> AliceResponse:
         return _make(chunk, session_state=new_state, buttons=buttons)
 
     # Slow path: persist pending row, fire wrapper, return wait phrase.
-    with deps.session_factory() as db:
-        repo.create_pending(
-            db,
-            pending_id=new_pending_id,
-            user_id=user_id,
-            session_id=session_id,
-            request_text=command,
-            messages=messages,
-        )
-        db.commit()
+    try:
+        with deps.session_factory() as db:
+            repo.create_pending(
+                db,
+                pending_id=new_pending_id,
+                user_id=user_id,
+                session_id=session_id,
+                request_text=command,
+                messages=messages,
+            )
+            db.commit()
+    except Exception as exc:
+        # Couldn't persist the pending row — cancel the orphaned LLM task
+        # rather than leaking it.
+        if not task.done():
+            task.cancel()
+        deps.registry.discard(new_pending_id)
+        log.warning("pending_create_failed", error=str(exc))
+        return _make(persona.LLM_ERROR)
     asyncio.create_task(
         _persist_result(task, new_pending_id, deps.session_factory, deps.registry)
     )

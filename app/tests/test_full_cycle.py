@@ -187,6 +187,61 @@ def test_exit_during_wait_ends_session(alice, db, mock_llm: MockLLMClient):
     alice.assert_text_equals(persona.FAREWELL)
 
 
+def test_reset_tool_is_advertised_to_llm(alice, db, mock_llm: MockLLMClient):
+    """Every LLM dispatch must include the reset_context tool so the model
+    can call it when keywords don't match. Regression guard for the wiring."""
+    user = repo.create_user(db, display_name="Test")
+    db.commit()
+    code = repo.create_link_code(db, user.id)
+    db.commit()
+    repo.consume_link_code(db, code, alice.application_id)
+    db.commit()
+
+    mock_llm.respond_instantly("Ответ.")
+    _timed_say(alice, "что-нибудь спросить")
+
+    assert mock_llm.tools_per_call, "LLM was never called"
+    tools = mock_llm.tools_per_call[0]
+    assert tools is not None
+    names = [t["function"]["name"] for t in tools]
+    assert "reset_context" in names
+
+
+def test_slow_llm_tool_call_triggers_reset(alice, db, mock_llm: MockLLMClient):
+    """If the reset_context tool call lands AFTER first_wait_timeout_s, the
+    persist worker writes a sentinel into the pending row; when the user
+    says "да" the waiting branch translates it into RESET_OK + context_since
+    instead of trying to chunk the sentinel as a literal answer."""
+    user = repo.create_user(db, display_name="Test")
+    db.commit()
+    code = repo.create_link_code(db, user.id)
+    db.commit()
+    repo.consume_link_code(db, code, alice.application_id)
+    db.commit()
+
+    mock_llm.respond_instantly("Зима — сон леса.")
+    # Tool call arrives slowly (after the 0.1s first-wait window).
+    mock_llm.call_tool_after(0.3, "reset_context")
+    mock_llm.respond_instantly("Свежий ответ.")
+
+    _timed_say(alice, "что такое зима")
+    _timed_say(alice, "хочу поговорить о другом")
+    alice.assert_text_equals(FAST_CONFIG["persona"]["wait_phrases"][0])
+    alice.assert_has_pending()
+
+    time.sleep(0.4)  # let _persist_result write the sentinel
+    _timed_say(alice, "да")
+    alice.assert_text_equals(persona.RESET_OK)
+    alice.assert_no_pending()
+    assert "context_since" in alice.last_session_state
+
+    _timed_say(alice, "новый вопрос")
+    last_messages = mock_llm.calls[-1]
+    user_msgs = [m["content"] for m in last_messages if m["role"] == "user"]
+    assert "что такое зима" not in user_msgs
+    assert user_msgs == ["новый вопрос"]
+
+
 def test_llm_tool_call_triggers_reset(alice, db, mock_llm: MockLLMClient):
     """An LLM that returns a reset_context tool_call instead of text is treated
     as a reset: dialog stays open, history filtered out of the next prompt,

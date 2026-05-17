@@ -22,6 +22,7 @@ class MockLLMClient:
     def __init__(self) -> None:
         self._behaviours: list[_Behaviour] = []
         self.calls: list[list[dict]] = []
+        self.tools_per_call: list[list[dict] | None] = []
         self._default = _Behaviour(0.0, "Лесная мудрость в одной строке.", None)
 
     # --- builders ---
@@ -65,6 +66,7 @@ class MockLLMClient:
         tools: list[dict] | None = None,
     ) -> LLMResult:
         self.calls.append(list(messages))
+        self.tools_per_call.append(list(tools) if tools else None)
         behaviour = self._behaviours.pop(0) if self._behaviours else self._default
         if behaviour.delay_s > 0:
             await asyncio.sleep(behaviour.delay_s)

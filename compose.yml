@@ -12,6 +12,11 @@ services:
       # Set ROOT_PATH to your subpath (e.g. /elk) if you want FastAPI's
       # internal URL generation to reflect it. Webhook routing works without.
       ROOT_PATH: ${ROOT_PATH:-}
+      # Optional outbound HTTP proxy for LLM calls. httpx picks these up via
+      # trust_env=True, so no code change is needed.
+      HTTP_PROXY: ${HTTP_PROXY:-}
+      HTTPS_PROXY: ${HTTPS_PROXY:-}
+      NO_PROXY: ${NO_PROXY:-}
     volumes:
       - ./data:/data
     networks:

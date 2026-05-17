@@ -1,0 +1,40 @@
+services:
+  elk:
+    build: .
+    image: alisa-elk:latest
+    container_name: alisa-elk
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      # Override DB_URL to point at the bind-mounted volume regardless of
+      # what's in .env. Host's ./data is mapped to /data in the container.
+      DB_URL: sqlite:////data/elk.db
+      # Set ROOT_PATH to your subpath (e.g. /elk) if you want FastAPI's
+      # internal URL generation to reflect it. Webhook routing works without.
+      ROOT_PATH: ${ROOT_PATH:-}
+    volumes:
+      - ./data:/data
+    networks:
+      - traefik
+    labels:
+      traefik.enable: "true"
+      traefik.docker.network: ${TRAEFIK_NETWORK:-traefik}
+
+      # Router: serve on $DOMAIN under $ROUTE_PREFIX, e.g. /elk
+      traefik.http.routers.elk.rule: "Host(`${DOMAIN}`) && PathPrefix(`${ROUTE_PREFIX:-/elk}`)"
+      traefik.http.routers.elk.entrypoints: ${TRAEFIK_ENTRYPOINT:-websecure}
+      traefik.http.routers.elk.tls: "true"
+      traefik.http.routers.elk.tls.certresolver: ${TRAEFIK_CERTRESOLVER:-letsencrypt}
+      traefik.http.routers.elk.middlewares: elk-strip
+
+      # Middleware: strip $ROUTE_PREFIX before forwarding to the container.
+      traefik.http.middlewares.elk-strip.stripprefix.prefixes: ${ROUTE_PREFIX:-/elk}
+
+      # Service: container listens on 8080
+      traefik.http.services.elk.loadbalancer.server.port: "8080"
+
+networks:
+  # The network Traefik is attached to. Must already exist on the host.
+  traefik:
+    external: true
+    name: ${TRAEFIK_NETWORK:-traefik}

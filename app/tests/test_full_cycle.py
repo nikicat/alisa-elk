@@ -187,6 +187,34 @@ def test_exit_during_wait_ends_session(alice, db, mock_llm: MockLLMClient):
     alice.assert_text_equals(persona.FAREWELL)
 
 
+def test_bare_zabud_triggers_reset(alice, db, mock_llm: MockLLMClient):
+    """Regression: a single-word "забудь" used to slip past RESET_WORDS
+    (which only had multi-word phrases) and reach the LLM, which would
+    role-play a "forget" reply without actually clearing context."""
+    user = repo.create_user(db, display_name="Test")
+    db.commit()
+    code = repo.create_link_code(db, user.id)
+    db.commit()
+    repo.consume_link_code(db, code, alice.application_id)
+    db.commit()
+
+    mock_llm.respond_instantly("Круг радиуса корень из пяти.")
+    mock_llm.respond_instantly("Свежая мысль.")
+
+    _timed_say(alice, "что такое окружность")
+    _timed_say(alice, "забудь")
+    # Must be the canned reset reply, not an LLM completion.
+    alice.assert_text_equals(persona.RESET_OK)
+    # And the LLM must not have been called for the reset turn.
+    assert len(mock_llm.calls) == 1
+
+    _timed_say(alice, "следующий вопрос")
+    second_messages = mock_llm.calls[1]
+    user_msgs = [m["content"] for m in second_messages if m["role"] == "user"]
+    assert "что такое окружность" not in user_msgs
+    assert user_msgs == ["следующий вопрос"]
+
+
 def test_reset_intent_clears_history_and_persists(alice, db, mock_llm: MockLLMClient):
     """User says "забудь всё" mid-dialog: the dialog stays open, the next
     LLM call sees no prior turns, and subsequent turns continue to filter

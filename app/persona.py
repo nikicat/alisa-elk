@@ -49,6 +49,7 @@ NEGATIVE_WORDS: frozenset[str] = frozenset(
 )
 RESET_WORDS: frozenset[str] = frozenset(
     {
+        "забудь",
         "начнем заново",
         "начнем сначала",
         "сменим тему",

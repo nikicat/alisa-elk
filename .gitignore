@@ -10,3 +10,8 @@ __pycache__/
 *.egg-info/
 dist/
 build/
+
+# Bind-mount target — directory itself is tracked via .gitkeep so a clone
+# is ready for `docker compose up`, contents are not.
+data/*
+!data/.gitkeep

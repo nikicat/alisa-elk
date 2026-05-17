@@ -48,7 +48,8 @@ container — no Traefik config files to touch.
 git clone https://github.com/nikicat/alisa-elk.git
 cd alisa-elk
 
-# Bind-mount target for SQLite.
+# `data/` is committed (gitignored contents) so this is a no-op on fresh
+# clones, but it's safe to re-run.
 mkdir -p data
 
 # Fill in .env with real values.

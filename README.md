@@ -48,9 +48,8 @@ container — no Traefik config files to touch.
 git clone https://github.com/nikicat/alisa-elk.git
 cd alisa-elk
 
-# Bind-mount target for SQLite. uid 1000 matches the container user.
+# Bind-mount target for SQLite.
 mkdir -p data
-sudo chown -R 1000:1000 data
 
 # Fill in .env with real values.
 cp .env.example .env

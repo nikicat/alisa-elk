@@ -166,9 +166,7 @@ def test_llm_error_during_wait(alice, db, mock_llm: MockLLMClient):
     alice.assert_text_equals(persona.LLM_ERROR)
 
 
-def test_exit_while_waiting_cancels(
-    alice, db, mock_llm: MockLLMClient, registry
-):
+def test_exit_while_waiting_cancels(alice, db, mock_llm: MockLLMClient, registry):
     _setup_linked_user(db, alice)
     mock_llm.respond_after(60.0, "never")
     mock_llm.call_tool_instantly("exit_skill")  # classifier on "хватит"

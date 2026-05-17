@@ -133,8 +133,7 @@ def main(argv: list[str] | None = None) -> int:
         verdict = "PASS" if ok else "FAIL"
         if args.runs == 1:
             print(
-                f"[{verdict}] [{majority:<9}] (want {case.expected:<9}) "
-                f"{case.phrase!r}"
+                f"[{verdict}] [{majority:<9}] (want {case.expected:<9}) {case.phrase!r}"
             )
         else:
             dist = ", ".join(f"{k}={v}" for k, v in counter.most_common())
@@ -156,9 +155,7 @@ def main(argv: list[str] | None = None) -> int:
     header = "  " + " " * 11 + "  ".join(f"{b:<9}" for b in buckets)
     print(header)
     for e in buckets:
-        cells = "  ".join(
-            f"{confusion.get((e, a), 0):<9}" for a in buckets
-        )
+        cells = "  ".join(f"{confusion.get((e, a), 0):<9}" for a in buckets)
         print(f"  want {e:<8}  {cells}")
     return 0 if failed == 0 else 1
 

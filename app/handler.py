@@ -32,7 +32,9 @@ class HandlerDeps:
     session_factory: Callable[[], Session]
     llm: LLMClient
     registry: PendingTaskRegistry
-    graph: Any = None  # `CompiledStateGraph`; typed loosely to dodge a hard import here.
+    graph: Any = (
+        None  # `CompiledStateGraph`; typed loosely to dodge a hard import here.
+    )
 
 
 def _make(

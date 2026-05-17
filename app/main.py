@@ -97,9 +97,7 @@ async def skill_id_gate(request: Request, call_next):
     except Exception:
         return await call_next(request)
     if got and got != skill_id:
-        structlog.get_logger().warning(
-            "skill_id_mismatch", got=got, expected=skill_id
-        )
+        structlog.get_logger().warning("skill_id_mismatch", got=got, expected=skill_id)
         return JSONResponse(
             content={
                 "response": {

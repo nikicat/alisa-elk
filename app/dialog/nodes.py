@@ -286,7 +286,9 @@ def _apply_task_result(
         pending_id=pending_id,
     )
 
-    started_at = pending.get("llm_started_at") or state.get("started_at") or time.monotonic()
+    started_at = (
+        pending.get("llm_started_at") or state.get("started_at") or time.monotonic()
+    )
     total_ms = int((time.monotonic() - started_at) * 1000)
     application_id = pending.get("application_id") or state.get("application_id") or ""
     message_id = int(pending.get("message_id") or state.get("message_id") or 0)
@@ -314,8 +316,6 @@ def _apply_task_result(
     else:
         update["cursor"] = None
     return update
-
-
 
 
 def _store_paginated(

@@ -146,5 +146,3 @@ def recent_turns(
     stmt = stmt.order_by(TurnLog.ts.desc()).limit(limit)
     rows = db.execute(stmt).scalars().all()
     return list(reversed(rows))
-
-

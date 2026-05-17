@@ -352,7 +352,8 @@ async def words_bot_turn(state: DialogState) -> dict:
     dictionary = load_dictionary()
     used: set[str] = set(game["used"])
     candidates = [
-        w for w in dictionary.by_letter.get(game["required_letter"], ())
+        w
+        for w in dictionary.by_letter.get(game["required_letter"], ())
         if w not in used
     ]
     if not candidates:
@@ -493,13 +494,18 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--reset", action="store_true", help="wipe the checkpoint DB before starting"
     )
-    parser.add_argument("--db", default="data/langgraph.db", help="checkpoint file path")
+    parser.add_argument(
+        "--db", default="data/langgraph.db", help="checkpoint file path"
+    )
     parser.add_argument("--debug", action="store_true", help="print routing decisions")
     args = parser.parse_args(argv)
 
     settings = get_settings()
     if not settings.LLM_API_KEY or settings.LLM_API_KEY in {"sk-dev", "sk-replace-me"}:
-        print("error: LLM_API_KEY missing or placeholder. Set it in .env.", file=sys.stderr)
+        print(
+            "error: LLM_API_KEY missing or placeholder. Set it in .env.",
+            file=sys.stderr,
+        )
         return 2
 
     db_path = Path(args.db)
@@ -527,7 +533,7 @@ def main(argv: list[str] | None = None) -> int:
         while True:
             try:
                 user = input("Ты:  ").strip()
-            except (EOFError, KeyboardInterrupt):
+            except EOFError, KeyboardInterrupt:
                 print()
                 break
             if not user:
@@ -536,13 +542,17 @@ def main(argv: list[str] | None = None) -> int:
                 break
             # LangGraph merges partial updates into the checkpointed state,
             # but pyright wants the full TypedDict shape here.
-            result = graph.invoke(cast(DialogState, {"user_input": user}), config=config)
+            result = graph.invoke(
+                cast(DialogState, {"user_input": user}), config=config
+            )
             text = result.get("last_bot_text") or "(тишина)"
             print(f"Лось: {text}")
             if args.debug:
                 g = result.get("game")
                 if g:
-                    print(f"  [game] used={g['used']} →{g['required_letter']} cheat={g['last_cheat']}")
+                    print(
+                        f"  [game] used={g['used']} →{g['required_letter']} cheat={g['last_cheat']}"
+                    )
                 else:
                     print("  [game] None")
 

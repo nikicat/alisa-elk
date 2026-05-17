@@ -42,24 +42,125 @@ SKIP_LETTERS = frozenset({"ь", "ъ", "ы"})
 # singular nominative. Enough variety that the player almost never runs
 # out of options inside a 10–15 round session.
 WORDLIST: dict[str, list[str]] = {
-    "а": ["арбуз", "апельсин", "автомобиль", "артист", "азбука", "аист", "аптека", "акула"],
+    "а": [
+        "арбуз",
+        "апельсин",
+        "автомобиль",
+        "артист",
+        "азбука",
+        "аист",
+        "аптека",
+        "акула",
+    ],
     "б": ["банан", "баран", "барсук", "береза", "билет", "бочка", "букварь", "бутылка"],
-    "в": ["ваза", "валенок", "вагон", "ведро", "вертолет", "ветер", "виноград", "волк", "ворона"],
+    "в": [
+        "ваза",
+        "валенок",
+        "вагон",
+        "ведро",
+        "вертолет",
+        "ветер",
+        "виноград",
+        "волк",
+        "ворона",
+    ],
     "г": ["газета", "гитара", "голубь", "гора", "гриб", "груша", "гусь"],
-    "д": ["дверь", "дельфин", "дерево", "диван", "дождь", "доктор", "дом", "дорога", "дуб"],
+    "д": [
+        "дверь",
+        "дельфин",
+        "дерево",
+        "диван",
+        "дождь",
+        "доктор",
+        "дом",
+        "дорога",
+        "дуб",
+    ],
     "е": ["енот", "ежевика", "елка"],
     "ж": ["жаба", "жемчуг", "жираф", "журнал", "желудь"],
     "з": ["заяц", "зебра", "зеркало", "змея", "золото", "зонт", "звезда"],
     "и": ["игла", "икра", "индюк", "иголка", "ива"],
-    "к": ["кабан", "картина", "карандаш", "кенгуру", "кит", "книга", "корова", "кот", "кран", "крыша"],
-    "л": ["лампа", "лебедь", "лев", "лес", "лимон", "лиса", "ложка", "лошадь", "луна", "лужа"],
-    "м": ["магазин", "мак", "малина", "медведь", "мел", "мешок", "молоко", "мост", "мяч"],
+    "к": [
+        "кабан",
+        "картина",
+        "карандаш",
+        "кенгуру",
+        "кит",
+        "книга",
+        "корова",
+        "кот",
+        "кран",
+        "крыша",
+    ],
+    "л": [
+        "лампа",
+        "лебедь",
+        "лев",
+        "лес",
+        "лимон",
+        "лиса",
+        "ложка",
+        "лошадь",
+        "луна",
+        "лужа",
+    ],
+    "м": [
+        "магазин",
+        "мак",
+        "малина",
+        "медведь",
+        "мел",
+        "мешок",
+        "молоко",
+        "мост",
+        "мяч",
+    ],
     "н": ["небо", "нога", "нос", "нота", "носок", "ножик"],
     "о": ["облако", "овца", "огонь", "окно", "олень", "орех", "осел", "остров"],
-    "п": ["парус", "паук", "перо", "петух", "пингвин", "поезд", "поле", "потолок", "птица"],
-    "р": ["радуга", "ракета", "ракушка", "ребенок", "река", "репа", "рис", "рукав", "рыба"],
-    "с": ["сад", "самолет", "свеча", "свинья", "скала", "слон", "снег", "собака", "солнце", "стол"],
-    "т": ["тарелка", "телевизор", "тигр", "топор", "торт", "трава", "троллейбус", "туча"],
+    "п": [
+        "парус",
+        "паук",
+        "перо",
+        "петух",
+        "пингвин",
+        "поезд",
+        "поле",
+        "потолок",
+        "птица",
+    ],
+    "р": [
+        "радуга",
+        "ракета",
+        "ракушка",
+        "ребенок",
+        "река",
+        "репа",
+        "рис",
+        "рукав",
+        "рыба",
+    ],
+    "с": [
+        "сад",
+        "самолет",
+        "свеча",
+        "свинья",
+        "скала",
+        "слон",
+        "снег",
+        "собака",
+        "солнце",
+        "стол",
+    ],
+    "т": [
+        "тарелка",
+        "телевизор",
+        "тигр",
+        "топор",
+        "торт",
+        "трава",
+        "троллейбус",
+        "туча",
+    ],
     "у": ["ужин", "улитка", "улица", "утка", "ухо", "утюг"],
     "ф": ["фабрика", "фасоль", "ферма", "фонарь", "фонтан", "футбол"],
     "х": ["халат", "хвост", "хлеб", "холм", "хомяк"],
@@ -134,7 +235,9 @@ class SessionResult:
     seed: str  # the seed word (strict) or "(casual)" placeholder
     mode: str  # "casual" or "strict"
     rounds: list[RoundResult] = field(default_factory=list)
-    stopped_reason: str = ""  # max_rounds | bot_fail | no_player_word | http_error | cheat_probe
+    stopped_reason: str = (
+        ""  # max_rounds | bot_fail | no_player_word | http_error | cheat_probe
+    )
 
     @property
     def chain_rounds(self) -> list[RoundResult]:
@@ -273,14 +376,16 @@ def run_session(
             if cheat_word is not None:
                 messages.append({"role": "user", "content": cheat_word})
                 try:
-                    raw = call_llm(
-                        client, url, api_key, model, messages, temperature
-                    )
+                    raw = call_llm(client, url, api_key, model, messages, temperature)
                 except httpx.HTTPError as exc:
                     result.rounds.append(
                         RoundResult(
-                            None, str(exc), False, "http_error",
-                            next_letter, cheat_kind="wrong_letter",
+                            None,
+                            str(exc),
+                            False,
+                            "http_error",
+                            next_letter,
+                            cheat_kind="wrong_letter",
                         )
                     )
                     result.stopped_reason = "http_error"
@@ -297,8 +402,12 @@ def run_session(
                 reason = "cheat_accepted" if accepted else "cheat_detected"
                 result.rounds.append(
                     RoundResult(
-                        probe_word, raw, not accepted, reason,
-                        next_letter, cheat_kind="wrong_letter",
+                        probe_word,
+                        raw,
+                        not accepted,
+                        reason,
+                        next_letter,
+                        cheat_kind="wrong_letter",
                     )
                 )
                 result.stopped_reason = "cheat_probe"
@@ -321,12 +430,18 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         description="Probe an LLM's ability to play игра-в-слова over multiple sessions."
     )
-    parser.add_argument("--sessions", type=int, default=5, help="number of sessions to run")
-    parser.add_argument("--rounds", type=int, default=10, help="max bot turns per session")
+    parser.add_argument(
+        "--sessions", type=int, default=5, help="number of sessions to run"
+    )
+    parser.add_argument(
+        "--rounds", type=int, default=10, help="max bot turns per session"
+    )
     parser.add_argument("--model", help="Override LLM_MODEL from env/.env")
     parser.add_argument("--base-url", help="Override LLM_BASE_URL from env/.env")
     parser.add_argument("--temperature", type=float, default=0.6)
-    parser.add_argument("--seed", type=int, default=0, help="RNG seed for reproducibility")
+    parser.add_argument(
+        "--seed", type=int, default=0, help="RNG seed for reproducibility"
+    )
     parser.add_argument("--verbose", action="store_true", help="print every bot turn")
     parser.add_argument(
         "--continue-on-fail",
@@ -355,11 +470,18 @@ def main(argv: list[str] | None = None) -> int:
 
     settings = get_settings()
     base_url = (args.base_url or settings.LLM_BASE_URL).rstrip("/")
-    url = base_url if base_url.endswith("/chat/completions") else base_url + "/chat/completions"
+    url = (
+        base_url
+        if base_url.endswith("/chat/completions")
+        else base_url + "/chat/completions"
+    )
     model = args.model or settings.LLM_MODEL
     api_key = settings.LLM_API_KEY
     if not api_key or api_key in {"sk-dev", "sk-replace-me"}:
-        print("error: LLM_API_KEY missing or placeholder. Set it in .env.", file=sys.stderr)
+        print(
+            "error: LLM_API_KEY missing or placeholder. Set it in .env.",
+            file=sys.stderr,
+        )
         return 2
 
     print(f"model     : {model}")
@@ -394,7 +516,7 @@ def main(argv: list[str] | None = None) -> int:
                 cr = sr.cheat_rounds[0]
                 cheat_tag = f" cheat={'DETECTED' if cr.ok else 'ACCEPTED'}"
             print(
-                f"[session {i+1}] seed={sr.seed!r} "
+                f"[session {i + 1}] seed={sr.seed!r} "
                 f"valid={sr.valid_rounds}/{len(sr.chain_rounds)} "
                 f"stopped={sr.stopped_reason}{cheat_tag}"
             )
@@ -404,7 +526,9 @@ def main(argv: list[str] | None = None) -> int:
                     want = f"→{r.expected_letter}" if r.expected_letter else ""
                     marker = "*" if r.cheat_kind else " "
                     raw_snip = r.raw.replace("\n", " ")[:60]
-                    print(f"   {j:2d}.{marker}[{tag:16s}] {want:>4s}  {r.bot_word or '?'!r}  raw={raw_snip!r}")
+                    print(
+                        f"   {j:2d}.{marker}[{tag:16s}] {want:>4s}  {r.bot_word or '?'!r}  raw={raw_snip!r}"
+                    )
 
     chain_total = sum(len(s.chain_rounds) for s in sessions)
     chain_valid = sum(s.valid_rounds for s in sessions)

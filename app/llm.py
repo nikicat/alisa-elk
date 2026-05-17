@@ -69,7 +69,10 @@ class OpenAIRouterClient:
         max_tokens: int,
         temperature: float,
     ) -> LLMResult:
-        url = f"{self.base_url}/chat/completions"
+        if self.base_url.endswith("/chat/completions"):
+            url = self.base_url
+        else:
+            url = f"{self.base_url}/chat/completions"
         body = {
             "model": self.model,
             "messages": messages,

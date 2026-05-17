@@ -1,34 +1,40 @@
-"""LangGraph spike for the words game ("игра в слова").
+"""Words-game ("игра в слова") subskill — LangGraph dialog FSM.
 
-Standalone CLI that drives a tiny hierarchical FSM against the configured
-LLM router. The point is to prove out the architecture (game state in
-code, LLM as renderer, tool-call-as-transition, SQLite checkpointer) end
-to end before touching `app/handler.py`.
+A hierarchical state machine that handles both the idle persona chat
+and an in-game subgraph. Bot moves are deterministic picks from
+`words_dict.tsv` (no LLM cost). The only in-game LLM call is the
+intent classifier, which routes player input into a `challenge_word`
+tool, an `exit_game` tool, or pass-through to code-side chain
+validation.
 
-Graph shape (one StateGraph, hierarchy expressed by routing on `game`):
+Graph shape (one StateGraph; hierarchy is routing on `state.game`):
 
       START
         │
         ▼
-   entry_router ──── game is None ────► idle_llm ───┐
-        │                                 │         │
-        │ game set                tool: enter_game  │ no tool call
-        │                                 │         ▼
-        ▼                                 ▼        END (persona reply)
-   words_validate                  words_intro ───► END (bot's first word)
+   entry_router ─── game=None ──► idle_llm ──► words_intro ──► END
+        │                            │                          (bot's first word)
+        │                            └──► END (plain persona reply)
         │
-        ├─ cheat/exit ─► END (call-out or game-over message)
-        │
-        └─ ok ─► words_bot_turn ─► END (bot's next word)
+        └─── game set ───► words_classify_player
+                                │
+                                ├─► resolve_challenge ──► END  (win/lose verdict)
+                                ├─► END  (exit_game tool fired; back to idle)
+                                └─► words_validate
+                                         │
+                                         ├─► END  (cheat/no-word; called out)
+                                         └─► words_bot_turn ──► END
 
-State is checkpointed to data/langgraph.db; the CLI passes a thread_id
-and resumes the same conversation across runs.
+The module is runnable standalone for manual testing:
 
-Usage:
-    uv run python -m scripts.wordsgame_spike                # default thread
-    uv run python -m scripts.wordsgame_spike --thread foo
-    uv run python -m scripts.wordsgame_spike --reset        # wipe checkpoint
-    uv run python -m scripts.wordsgame_spike --debug        # show routing
+    uv run python -m app.games.words                 # default thread
+    uv run python -m app.games.words --thread foo
+    uv run python -m app.games.words --reset         # wipe checkpoint
+    uv run python -m app.games.words --debug         # show routing
+
+It also exposes `build_for_studio()` for `langgraph dev` and the
+node/state/tool symbols that `app/handler.py` will import once we wire
+this into the main dispatch in step (3).
 """
 
 from __future__ import annotations

@@ -1,10 +1,8 @@
-"""Behaviour tests for scripts/wordsgame_spike.py — the LangGraph FSM.
+"""Behaviour tests for app/games/words.py — the words-game FSM.
 
 We patch `make_llm` with a scripted FakeChatLLM that returns canned
 AIMessages, so these run offline. `_RNG` is seeded and the dictionary is
-swapped for a small in-memory fixture so bot moves are predictable. The
-same patterns will move into app/games/words.py when the spike graduates
-into the main handler.
+swapped for a small in-memory fixture so bot moves are predictable.
 
 LLM call budget per turn under the current design:
   - Idle (no game): 1 call to idle_llm.
@@ -34,7 +32,7 @@ import pytest
 from langchain_core.messages import AIMessage
 from langgraph.checkpoint.memory import MemorySaver
 
-from scripts import wordsgame_spike as spike
+from app.games import words as spike
 
 
 class FakeChatLLM:

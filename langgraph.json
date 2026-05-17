@@ -1,7 +1,7 @@
 {
   "dependencies": ["."],
   "graphs": {
-    "words": "./scripts/wordsgame_spike.py:build_for_studio"
+    "words": "./app/games/words.py:build_for_studio"
   },
   "env": ".env"
 }

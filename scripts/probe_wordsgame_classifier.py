@@ -1,4 +1,4 @@
-"""Probe the wordsgame_spike intent classifier with the configured LLM.
+"""Probe the words-game intent classifier with the configured LLM.
 
 The whole spike architecture rests on `words_classify_player` correctly
 routing player utterances to one of three buckets:
@@ -28,7 +28,7 @@ from dataclasses import dataclass
 from typing import cast
 
 from app.config import get_settings, reset_caches
-from scripts import wordsgame_spike as spike
+from app.games import words as spike
 
 
 @dataclass(frozen=True)
@@ -94,7 +94,7 @@ def classify_once(phrase: str) -> str:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
-        description="Probe the wordsgame_spike intent classifier."
+        description="Probe the words-game intent classifier."
     )
     parser.add_argument("--model", help="Override LLM_MODEL from env/.env")
     parser.add_argument(

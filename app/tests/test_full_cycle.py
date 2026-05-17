@@ -187,6 +187,34 @@ def test_exit_during_wait_ends_session(alice, db, mock_llm: MockLLMClient):
     alice.assert_text_equals(persona.FAREWELL)
 
 
+def test_llm_tool_call_triggers_reset(alice, db, mock_llm: MockLLMClient):
+    """An LLM that returns a reset_context tool_call instead of text is treated
+    as a reset: dialog stays open, history filtered out of the next prompt,
+    canned RESET_OK reply emitted."""
+    user = repo.create_user(db, display_name="Test")
+    db.commit()
+    code = repo.create_link_code(db, user.id)
+    db.commit()
+    repo.consume_link_code(db, code, alice.application_id)
+    db.commit()
+
+    mock_llm.respond_instantly("Зима — сон леса.")
+    mock_llm.call_tool_instantly("reset_context")  # user says "поговорим о другом"
+    mock_llm.respond_instantly("Свежий ответ.")
+
+    _timed_say(alice, "что такое зима")
+    _timed_say(alice, "поговорим о другом")
+    alice.assert_text_equals(persona.RESET_OK)
+    assert alice.responses[-1]["response"].get("end_session") is not True
+    assert "context_since" in alice.last_session_state
+
+    _timed_say(alice, "новый вопрос")
+    third_messages = mock_llm.calls[2]
+    user_msgs = [m["content"] for m in third_messages if m["role"] == "user"]
+    assert "что такое зима" not in user_msgs
+    assert user_msgs == ["новый вопрос"]
+
+
 def test_bare_zabud_triggers_reset(alice, db, mock_llm: MockLLMClient):
     """Regression: a single-word "забудь" used to slip past RESET_WORDS
     (which only had multi-word phrases) and reach the LLM, which would

@@ -11,6 +11,7 @@ class _Behaviour:
     text: str | None
     raise_exc: Exception | None
     on_call: Callable[[list[dict]], None] | None = None
+    tool_calls: list[str] | None = None
 
 
 class MockLLMClient:
@@ -27,6 +28,14 @@ class MockLLMClient:
 
     def respond_instantly(self, text: str) -> MockLLMClient:
         self._behaviours.append(_Behaviour(0.0, text, None))
+        return self
+
+    def call_tool_instantly(self, *names: str) -> MockLLMClient:
+        self._behaviours.append(_Behaviour(0.0, "", None, tool_calls=list(names)))
+        return self
+
+    def call_tool_after(self, delay_s: float, *names: str) -> MockLLMClient:
+        self._behaviours.append(_Behaviour(delay_s, "", None, tool_calls=list(names)))
         return self
 
     def respond_after(self, delay_s: float, text: str) -> MockLLMClient:
@@ -53,6 +62,7 @@ class MockLLMClient:
         *,
         max_tokens: int,
         temperature: float,
+        tools: list[dict] | None = None,
     ) -> LLMResult:
         self.calls.append(list(messages))
         behaviour = self._behaviours.pop(0) if self._behaviours else self._default
@@ -60,7 +70,12 @@ class MockLLMClient:
             await asyncio.sleep(behaviour.delay_s)
         if behaviour.raise_exc is not None:
             raise behaviour.raise_exc
-        return LLMResult(text=behaviour.text or "", input_tokens=10, output_tokens=20)
+        return LLMResult(
+            text=behaviour.text or "",
+            input_tokens=10,
+            output_tokens=20,
+            tool_calls=behaviour.tool_calls or [],
+        )
 
     async def aclose(self) -> None:
         return None

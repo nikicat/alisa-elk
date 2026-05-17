@@ -47,6 +47,20 @@ AFFIRMATIVE_WORDS: frozenset[str] = frozenset(
 NEGATIVE_WORDS: frozenset[str] = frozenset(
     {"нет", "отмени", "забудь", "не надо", "хватит уже"}
 )
+RESET_TOOL: dict = {
+    "type": "function",
+    "function": {
+        "name": "reset_context",
+        "description": (
+            "Call this when the user wants to forget the conversation so far "
+            "and start fresh, e.g. 'забудь', 'забудь всё', 'начнём заново', "
+            "'сменим тему'. Do NOT call for normal questions or small abort "
+            "requests."
+        ),
+        "parameters": {"type": "object", "properties": {}},
+    },
+}
+
 RESET_WORDS: frozenset[str] = frozenset(
     {
         "забудь",

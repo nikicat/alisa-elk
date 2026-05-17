@@ -22,6 +22,12 @@ from app.wait import PendingTaskRegistry, wait_for_or_keepalive
 log = structlog.get_logger(__name__)
 
 
+# Sentinel stored in PendingRequest.response_text when the slow-path LLM call
+# returned a reset_context tool call instead of a textual answer. The waiting
+# branch translates it into RESET_OK + context_since.
+RESET_SENTINEL = "__reset_context__"
+
+
 @dataclass
 class HandlerDeps:
     session_factory: Callable[[], Session]
@@ -79,16 +85,26 @@ async def _persist_result(
     """
     try:
         result = await task
+        is_reset = "reset_context" in result.tool_calls
+        stored_text = RESET_SENTINEL if is_reset else result.text
         with session_factory() as db:
-            repo.mark_pending_ready(db, pending_id, result.text)
+            repo.mark_pending_ready(db, pending_id, stored_text)
             db.commit()
-        log.info(
-            "llm_response",
-            path="slow",
-            response=result.text,
-            session_id=session_id,
-            pending_id=pending_id,
-        )
+        if is_reset:
+            log.info(
+                "llm_reset_tool",
+                path="slow",
+                session_id=session_id,
+                pending_id=pending_id,
+            )
+        else:
+            log.info(
+                "llm_response",
+                path="slow",
+                response=result.text,
+                session_id=session_id,
+                pending_id=pending_id,
+            )
     except asyncio.CancelledError:
         with session_factory() as db:
             repo.mark_pending_aborted(db, pending_id)
@@ -295,6 +311,7 @@ async def _route_inner(req: AliceRequest, deps: HandlerDeps) -> AliceResponse:
             messages,
             max_tokens=cfg["llm"]["max_tokens"],
             temperature=cfg["llm"]["temperature"],
+            tools=[persona.RESET_TOOL],
         )
     )
     deps.registry.register(new_pending_id, task)
@@ -318,6 +335,16 @@ async def _route_inner(req: AliceRequest, deps: HandlerDeps) -> AliceResponse:
         deps.registry.discard(new_pending_id)
         llm_ms = int((time.monotonic() - llm_t0) * 1000)
         total_ms = int((time.monotonic() - started_at) * 1000)
+        if "reset_context" in result.tool_calls:
+            log.info(
+                "llm_reset_tool",
+                session_id=session_id,
+                llm_ms=llm_ms,
+            )
+            return _make(
+                persona.RESET_OK,
+                session_state={"context_since": repo.utcnow().isoformat()},
+            )
         log.info(
             "llm_response",
             path="fast",
@@ -508,6 +535,11 @@ def _ready_response(
     started_at: float,
     cfg: dict[str, Any],
 ) -> AliceResponse:
+    if (pending.response_text or "") == RESET_SENTINEL:
+        return _make(
+            persona.RESET_OK,
+            session_state={"context_since": repo.utcnow().isoformat()},
+        )
     total_ms = int((time.monotonic() - started_at) * 1000)
     with deps.session_factory() as db:
         chunk, next_cursor = _store_paginated(

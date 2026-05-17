@@ -12,17 +12,19 @@ class LLMError(Exception):
 
 
 class LLMResult:
-    __slots__ = ("text", "input_tokens", "output_tokens")
+    __slots__ = ("text", "input_tokens", "output_tokens", "tool_calls")
 
     def __init__(
         self,
         text: str,
         input_tokens: int | None = None,
         output_tokens: int | None = None,
+        tool_calls: list[str] | None = None,
     ) -> None:
         self.text = text
         self.input_tokens = input_tokens
         self.output_tokens = output_tokens
+        self.tool_calls = tool_calls or []
 
 
 class LLMClient(Protocol):
@@ -32,6 +34,7 @@ class LLMClient(Protocol):
         *,
         max_tokens: int,
         temperature: float,
+        tools: list[dict] | None = None,
     ) -> LLMResult: ...
 
 
@@ -68,18 +71,21 @@ class OpenAIRouterClient:
         *,
         max_tokens: int,
         temperature: float,
+        tools: list[dict] | None = None,
     ) -> LLMResult:
         if self.base_url.endswith("/chat/completions"):
             url = self.base_url
         else:
             url = f"{self.base_url}/chat/completions"
-        body = {
+        body: dict = {
             "model": self.model,
             "messages": messages,
             "max_tokens": max_tokens,
             "temperature": temperature,
             "stream": False,
         }
+        if tools:
+            body["tools"] = tools
         headers = {"Authorization": f"Bearer {self.api_key}"}
         try:
             resp = await self._client.post(url, json=body, headers=headers)
@@ -91,12 +97,22 @@ class OpenAIRouterClient:
             raise LLMError(f"http {resp.status_code}: {resp.text[:200]}")
         data = resp.json()
         try:
-            text = data["choices"][0]["message"]["content"].strip()
-        except (KeyError, IndexError, AttributeError) as exc:
+            message = data["choices"][0]["message"]
+        except (KeyError, IndexError) as exc:
             raise LLMError(f"bad shape: {exc}") from exc
+        raw_tool_calls = message.get("tool_calls") or []
+        tool_call_names = [
+            tc.get("function", {}).get("name")
+            for tc in raw_tool_calls
+            if tc.get("function", {}).get("name")
+        ]
+        text = (message.get("content") or "").strip()
+        if not text and not tool_call_names:
+            raise LLMError("bad shape: empty content and no tool calls")
         usage = data.get("usage") or {}
         return LLMResult(
             text=text,
             input_tokens=usage.get("prompt_tokens"),
             output_tokens=usage.get("completion_tokens"),
+            tool_calls=tool_call_names,
         )

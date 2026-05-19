@@ -292,6 +292,33 @@ async def test_not_a_noun_classifier_skips_chain_validation(fake_llm, graph):
     assert result["game"]["last_cheat"] == "not_a_noun"
 
 
+async def test_valid_move_after_not_a_noun_advances_chain(fake_llm, graph):
+    """Regression: a `not_a_noun` turn sets `game.last_cheat`, which is
+    a per-turn marker. On the FOLLOWING turn, if the player plays a
+    valid word, `route_after_classify` must not short-circuit on the
+    stale cheat — otherwise `words_validate` never runs and the handler
+    falls back to "Слушаю." (real-world report: bot replied "слушаю"
+    to "лампа" after a streak of gibberish)."""
+    fake_llm([enter_game_call(), not_a_noun_call(), no_tool_reply()])
+    await invoke(graph, "давай")
+    bot_first = _state_game(graph)["used"][0]
+    required = spike.required_start(bot_first)
+    assert required is not None
+    dictionary = spike.load_dictionary()
+    candidates = [w for w in dictionary.by_letter.get(required, ()) if w != bot_first]
+    if not candidates:
+        pytest.skip(f"no follow-up in dict for «{required}» (bot picked {bot_first!r})")
+    await invoke(graph, "иририри")  # classifier → not_a_noun, sets stale cheat
+    assert _state_game(graph)["last_cheat"] == "not_a_noun"
+    player_word = candidates[0]
+    result = await invoke(graph, player_word)
+    used = result["game"]["used"]
+    assert used[0] == bot_first
+    assert used[1] == player_word
+    assert len(used) == 3  # bot played a follow-up
+    assert result["game"]["last_cheat"] is None
+
+
 @pytest.mark.usefixtures("small_dict")
 async def test_exit_via_classifier_ends_game(fake_llm, graph):
     fake_llm(

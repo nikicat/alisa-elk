@@ -300,7 +300,12 @@ async def words_classify_player(state: DialogState) -> dict:
             return {}  # fall through to words_validate
         tool_calls = getattr(reply, "tool_calls", None) or []
         name = tool_calls[0].get("name") if tool_calls else None
-        slog.info("words_classify", intent=name or "word_move", llm_ms=ms())
+        slog.info(
+            "words_classify",
+            intent=name or "word_move",
+            response=reply.content or "",
+            llm_ms=ms(),
+        )
     game = state.get("game")
     if name == "challenge_word" and game is not None:
         return {"game": {**game, "last_cheat": "challenge"}}
@@ -321,7 +326,12 @@ async def words_classify_player(state: DialogState) -> dict:
                 f"единственного числа.{tail}"
             ),
         }
-    return {}  # pass-through to words_validate
+    # Pass-through to words_validate. Wipe any stale `last_cheat` from a
+    # prior turn — route_after_classify treats truthy `last_cheat` as
+    # "turn already rendered" and would short-circuit before validate.
+    if game is not None and game.get("last_cheat"):
+        return {"game": {**game, "last_cheat": None}}
+    return {}
 
 
 async def words_resolve_challenge(state: DialogState) -> dict:

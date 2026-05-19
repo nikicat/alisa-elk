@@ -3,9 +3,12 @@
 A hierarchical state machine that handles both the idle persona chat
 and an in-game subgraph. Bot moves are deterministic picks from
 `words_dict.tsv` (no LLM cost). The only in-game LLM call is the
-intent classifier, which routes player input into a `challenge_word`
-tool, an `exit_game` tool, or pass-through to code-side chain
-validation.
+classifier in `words_classify_player`, which both routes the player's
+intent and extracts the candidate noun when applicable.
+
+Bound classifier tools: noun_attempt(word), not_a_noun, challenge_word,
+exit_game. On noun_attempt, the LLM hands back the extracted word; code
+downstream only runs the chain-rule check (first letter + dedup).
 
 Graph shape (one StateGraph; hierarchy is routing on `state.game`):
 
@@ -18,11 +21,11 @@ Graph shape (one StateGraph; hierarchy is routing on `state.game`):
         │
         └─── game set ───► words_classify_player
                                 │
-                                ├─► resolve_challenge ──► END  (win/lose verdict)
-                                ├─► END  (exit_game tool fired; back to idle)
-                                └─► words_validate
+                                ├─► resolve_challenge ──► END  (challenge → win/lose)
+                                ├─► END  (exit_game / not_a_noun; scolded)
+                                └─► words_validate  (noun_attempt → chain check)
                                          │
-                                         ├─► END  (cheat/no-word; called out)
+                                         ├─► END  (wrong_letter / repeat)
                                          └─► words_bot_turn ──► END
 
 The module is runnable standalone for manual testing:
@@ -120,7 +123,13 @@ def load_dictionary() -> WordDict:
 class GameState(TypedDict):
     used: list[str]
     required_letter: str | None
-    last_cheat: str | None  # None | "wrong_letter" | "repeat"
+    # Per-turn marker read by route_after_classify / route_after_validate.
+    # "challenge" routes to resolve_challenge; any other truthy value ends
+    # the turn after the scold message is set.
+    last_cheat: str | None  # None | "not_a_noun" | "wrong_letter" | "repeat" | "challenge"
+    # Set by words_classify_player when the LLM fires noun_attempt with an
+    # extracted candidate; consumed (and cleared) by words_validate.
+    candidate_word: str | None
 
 
 class DialogState(TypedDict, total=False):
@@ -153,32 +162,40 @@ def exit_game() -> str:
 
 
 @tool
+def noun_attempt(word: str) -> str:
+    """Вызови, когда реплика игрока — попытка назвать существительное
+    в именительном падеже единственного числа. В аргумент `word`
+    передай само слово в нижнем регистре, без знаков препинания
+    («мой ответ — яблоко» → word="яблоко»). Если слово незнакомое
+    или выдуманное, но выглядит как существительное (например,
+    «вертля»), всё равно noun_attempt — словарь проверим сами."""
+    return f"noun {word}"
+
+
+@tool
 def challenge_word() -> str:
     """Вызови ТОЛЬКО когда в реплике игрока есть явные слова сомнения
-    про ТВОЁ предыдущее слово: «сомневаюсь», «такого слова нет»,
+    в ТВОЁМ предыдущем слове: «сомневаюсь», «такого слова нет»,
     «проверь своё слово», «это не слово», «выдумал», «врёшь».
-    Если реплика — это просто одно слово (даже выдуманное, как
-    «вертля» или «иририри»), это попытка хода, а не сомнение — НЕ
-    вызывай. После вызова мы проверяем твоё последнее слово по
-    словарю и объявляем победителя."""
+    Одно слово, даже выдуманное, — это noun_attempt, а НЕ challenge."""
     return "challenged"
 
 
 @tool
 def not_a_noun() -> str:
-    """Вызови, когда реплика игрока — это НЕ существительное в
-    именительном падеже единственного числа. Сюда подходит бессмыслица
-    («иририри», «абвгд»), глагол («бегать», «играть»), прилагательное
-    («красивый»), множественное число («штаны», «ножницы»), любой
-    другой падеж кроме именительного («книги», «столу»), имя собственное
-    или географическое название («Москва», «Иван»). Если в реплике
-    встречается ПОДХОДЯЩЕЕ существительное (даже с любым предисловием:
-    «мой ответ — яблоко»), не вызывай этот инструмент."""
+    """Вызови, когда реплика — НЕ существительное в именительном падеже
+    единственного числа. Сюда подходит: другая часть речи (глагол
+    «бегать», прилагательное «красивый», местоимение «той», «его»,
+    «себя», предлог), любой косвенный падеж («книги», «столу»),
+    множественное число («штаны», «ножницы»), имя собственное или
+    географическое название («Москва», «Иван»), бессмыслица
+    («иририри», «wow ???»), либо реплика без слова (тишина, эмоция
+    без существительного)."""
     return "not a noun"
 
 
 IDLE_TOOLS = [enter_game, exit_game]
-IN_GAME_TOOLS = [challenge_word, exit_game, not_a_noun]
+IN_GAME_TOOLS = [noun_attempt, not_a_noun, challenge_word, exit_game]
 
 
 # ---------------------------------------------------------------- helpers
@@ -191,11 +208,6 @@ def required_start(word: str) -> str | None:
                 continue
             return ch
     return None
-
-
-def extract_word(text: str) -> str | None:
-    matches = re.findall(r"[а-яё]{2,}", text.lower())
-    return matches[-1] if matches else None
 
 
 @contextlib.contextmanager
@@ -242,7 +254,9 @@ async def idle_llm(state: DialogState) -> dict:
     if tool_calls:
         tc = tool_calls[0]
         if tc["name"] == "enter_game":
-            update["game"] = GameState(used=[], required_letter=None, last_cheat=None)
+            update["game"] = GameState(
+                used=[], required_letter=None, last_cheat=None, candidate_word=None
+            )
             # words_intro produces the user-visible text on this same turn.
             update["last_bot_text"] = None
         elif tc["name"] == "exit_game":
@@ -266,78 +280,101 @@ async def words_intro(state: DialogState) -> dict:
     )
     return {
         "game": GameState(
-            used=[word], required_letter=required_start(word), last_cheat=None
+            used=[word],
+            required_letter=required_start(word),
+            last_cheat=None,
+            candidate_word=None,
         ),
         "messages": [AIMessage(word)],
         "last_bot_text": f"Поехали. Моё слово: {word}.",
     }
 
 
-async def words_classify_player(state: DialogState) -> dict:
-    """LLM-driven intent classifier.
+_CLASSIFY_PROMPT_TEMPLATE = (
+    "Идёт игра «в слова». Правила: каждый по очереди называет "
+    "существительное в именительном падеже единственного числа, "
+    "начинающееся на последнюю значимую букву предыдущего слова "
+    "(ь, ъ, ы пропускаются). Слова не повторяются.\n\n"
+    "Контекст хода:\n"
+    "— твоё последнее слово: «{bot_word}»\n"
+    "— требуемая первая буква следующего слова: «{required}»\n\n"
+    "Реплика игрока приходит следующим сообщением. Определи, что он "
+    "имеет в виду, и вызови ровно один инструмент: noun_attempt(word), "
+    "not_a_noun, challenge_word или exit_game. Описание у каждого "
+    "инструмента — следуй ему буквально."
+)
 
-    Looks at the player's message with [challenge_word, exit_game] tools
-    bound. If a tool is emitted, that becomes the transition; otherwise we
-    pass through and let `words_validate` treat the message as a normal
-    word move. The classifier is the only LLM call inside an active game.
+
+def _not_a_noun_update(game: GameState) -> dict:
+    required = game["required_letter"] or ""
+    tail = f" Назови существительное на «{required}»." if required else ""
+    return {
+        "game": {**game, "last_cheat": "not_a_noun", "candidate_word": None},
+        "user_input": None,
+        "last_bot_text": (
+            "Это не существительное в именительном падеже "
+            f"единственного числа.{tail}"
+        ),
+    }
+
+
+async def words_classify_player(state: DialogState) -> dict:
+    """Single LLM call: classify the player's reply AND, if it's a
+    noun attempt, extract the normalized candidate word.
+
+    Bound tools: noun_attempt(word), not_a_noun, challenge_word, exit_game.
+    The system prompt includes the bot's last word and the required first
+    letter so the classifier can reason about challenges and rule context.
     """
     raw = (state.get("user_input") or "").strip()
+    game = state.get("game")
     slog = log.bind(session_id=state.get("session_id"))
-    if not raw:
-        return {}  # nothing to classify
-    llm = make_llm(temperature=0.0, max_tokens=24).bind_tools(IN_GAME_TOOLS)
+    if not raw or game is None:
+        return {}
+    bot_word = game["used"][-1] if game["used"] else "—"
+    required = game["required_letter"] or "—"
+    llm = make_llm(temperature=0.0, max_tokens=64).bind_tools(IN_GAME_TOOLS)
     sys_msg = SystemMessage(
-        "Идёт игра «в слова». Сообщение ниже — реплика собеседника. "
-        "Если реплика — это одно слово (попытка хода), ничего не "
-        "вызывай, даже если слово кажется выдуманным или странным. "
-        "Если он хочет выйти из игры или закончить — вызови exit_game. "
-        "Если в реплике есть явные слова сомнения в твоём предыдущем "
-        "слове («сомневаюсь», «такого слова нет», «проверь», «врёшь», "
-        "«выдумал») — вызови challenge_word. Если реплика — это связная "
-        "фраза, но НЕ существительное в именительном падеже единственного "
-        "числа (глагол, прилагательное, множественное число, имя "
-        "собственное) — вызови not_a_noun. Иначе ничего не вызывай."
+        _CLASSIFY_PROMPT_TEMPLATE.format(bot_word=bot_word, required=required)
     )
     with _elapsed_ms() as ms:
         try:
             reply = await llm.ainvoke([sys_msg, HumanMessage(raw)])
         except Exception as exc:
             slog.warning("words_classify_error", error=str(exc), llm_ms=ms())
-            return {}  # fall through to words_validate
+            # Treat LLM failure as "couldn't classify" — scold and stay.
+            return _not_a_noun_update(game)
         tool_calls = getattr(reply, "tool_calls", None) or []
         name = tool_calls[0].get("name") if tool_calls else None
+        args = tool_calls[0].get("args") if tool_calls else None
         slog.info(
             "words_classify",
-            intent=name or "word_move",
+            intent=name or "no_tool",
+            args=args,
             response=reply.content or "",
             llm_ms=ms(),
         )
-    game = state.get("game")
-    if name == "challenge_word" and game is not None:
-        return {"game": {**game, "last_cheat": "challenge"}}
+
     if name == "exit_game":
         return {
             "game": None,
             "user_input": None,
             "last_bot_text": "Хорошо, заканчиваем игру. Возвращаемся к беседе.",
         }
-    if name == "not_a_noun" and game is not None:
-        required = game["required_letter"] or ""
-        tail = f" Назови существительное на «{required}»." if required else ""
-        return {
-            "game": {**game, "last_cheat": "not_a_noun"},
-            "user_input": None,
-            "last_bot_text": (
-                "Это не существительное в именительном падеже "
-                f"единственного числа.{tail}"
-            ),
-        }
-    # Pass-through to words_validate. Wipe any stale `last_cheat` from a
-    # prior turn — route_after_classify treats truthy `last_cheat` as
-    # "turn already rendered" and would short-circuit before validate.
-    if game is not None and game.get("last_cheat"):
-        return {"game": {**game, "last_cheat": None}}
-    return {}
+    if name == "challenge_word":
+        return {"game": {**game, "last_cheat": "challenge", "candidate_word": None}}
+    if name == "noun_attempt":
+        word = ((args or {}).get("word") or "").strip().lower()
+        if word and re.fullmatch(r"[а-яё]+", word):
+            return {
+                "game": {**game, "last_cheat": None, "candidate_word": word},
+                "user_input": None,
+            }
+        # LLM fired noun_attempt but didn't extract a clean cyrillic word.
+        # Treat as if it had said not_a_noun.
+        return _not_a_noun_update(game)
+    # not_a_noun, unknown tool, or no tool at all — all scold and stay.
+    return _not_a_noun_update(game)
 
 
 async def words_resolve_challenge(state: DialogState) -> dict:
@@ -376,27 +413,22 @@ async def words_resolve_challenge(state: DialogState) -> dict:
 
 
 async def words_validate(state: DialogState) -> dict:
-    """Pure chain-rule logic. Exit, challenge, and noun-validity checks
-    are handled upstream by `words_classify_player` via tool calls."""
+    """Pure chain-rule logic. Reads the candidate word that the classifier
+    extracted via `noun_attempt(word=...)`; never re-extracts from the raw
+    message. Exit / challenge / not-a-noun decisions live upstream."""
     game = state.get("game")
     assert game is not None
     slog = log.bind(session_id=state.get("session_id"))
-    raw = (state.get("user_input") or "").strip().lower()
-    user_word = extract_word(raw)
-    if user_word is None:
-        # Mark as a "cheat" so route_after_validate ends the turn here
-        # instead of falling through to words_bot_turn (which would
-        # overwrite our message with a fresh bot word).
-        slog.info("words_validate", outcome="no_word", raw=raw)
-        return {
-            "game": {**game, "last_cheat": "no_word"},
-            "user_input": None,
-            "last_bot_text": "Я не расслышал слова. Назови ещё раз.",
-        }
+    user_word = (game.get("candidate_word") or "").strip().lower()
+    if not user_word:
+        # Defensive: route_after_classify should only land us here with
+        # a candidate set. Treat a missing candidate as not_a_noun.
+        slog.info("words_validate", outcome="no_candidate")
+        return _not_a_noun_update(game)
     if user_word in game["used"]:
         slog.info("words_validate", outcome="repeat", player_word=user_word)
         return {
-            "game": {**game, "last_cheat": "repeat"},
+            "game": {**game, "last_cheat": "repeat", "candidate_word": None},
             "user_input": None,
             "last_bot_text": (
                 f"Слово «{user_word}» уже было. Назови другое на «{game['required_letter']}»."
@@ -411,7 +443,7 @@ async def words_validate(state: DialogState) -> dict:
             required=expected,
         )
         return {
-            "game": {**game, "last_cheat": "wrong_letter"},
+            "game": {**game, "last_cheat": "wrong_letter", "candidate_word": None},
             "user_input": None,
             "last_bot_text": (
                 f"Слово должно начинаться на «{expected}». Попробуй ещё раз."
@@ -424,6 +456,7 @@ async def words_validate(state: DialogState) -> dict:
             used=game["used"] + [user_word],
             required_letter=required_start(user_word),
             last_cheat=None,
+            candidate_word=None,
         ),
         "messages": [HumanMessage(user_word)],
         "user_input": None,
@@ -466,6 +499,7 @@ async def words_bot_turn(state: DialogState) -> dict:
             used=game["used"] + [word],
             required_letter=required_start(word),
             last_cheat=None,
+            candidate_word=None,
         ),
         "messages": [AIMessage(word)],
         "last_bot_text": word,

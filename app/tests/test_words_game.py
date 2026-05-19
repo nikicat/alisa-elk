@@ -9,17 +9,20 @@ LLM call budget per turn under the current design:
   - In-game: 1 call to words_classify_player. Bot moves are deterministic
     dictionary picks — no LLM call.
 
+The classifier emits exactly one of four tools:
+  - noun_attempt(word=...) → words_validate runs the chain check
+  - not_a_noun()           → scold and stay
+  - challenge_word()       → resolve via dictionary
+  - exit_game()            → end game
+
 Failure modes exercised:
-  - player picks a wrong-letter word
-  - player repeats an already-used word
-  - player types gibberish (no Russian word) — regression for the bug
-    where the chain silently advanced past a "didn't hear you" message
+  - player picks a wrong-letter word (noun_attempt → wrong_letter)
+  - player repeats an already-used word (noun_attempt → repeat)
+  - player types gibberish — classifier fires not_a_noun
   - player intent classified as exit_game (tool call)
-  - player intent classified as challenge_word, bot's word IS in dict
-    → player loses
-  - player intent classified as challenge_word, bot's word is NOT in
-    dict → player wins
-  - player intent classified as not_a_noun (gibberish, plural, verb)
+  - challenge_word, bot's word IS in dict → player loses
+  - challenge_word, bot's word is NOT in dict → player wins
+  - not_a_noun (gibberish, plural, verb, oblique-case pronoun like «той»)
     → chain does not advance, bot scolds and waits
   - bot exhausts its dictionary pool for the required letter → surrenders
   - idle persona reply with no tool call ends the turn
@@ -148,9 +151,14 @@ def not_a_noun_call() -> AIMessage:
     )
 
 
-def no_tool_reply(text: str = "ход") -> AIMessage:
-    """Classifier output meaning 'not a tool, treat as a normal move'."""
-    return AIMessage(content=text)
+def noun_attempt_call(word: str) -> AIMessage:
+    """Classifier output meaning 'player tried to name a noun (= word)'."""
+    return AIMessage(
+        content="",
+        tool_calls=[
+            {"name": "noun_attempt", "args": {"word": word}, "id": "tc-noun"}
+        ],
+    )
 
 
 # --------------------------------------------------------------- happy path
@@ -172,10 +180,10 @@ def _state_game(graph) -> dict:
 
 
 async def test_valid_player_move_advances_chain(fake_llm, graph):
-    """Player word valid → classifier says no-tool → validate appends →
-    bot picks deterministically from dictionary. Uses the real 554-word
-    dictionary, which has follow-ups for every reachable letter."""
-    fake_llm([enter_game_call(), no_tool_reply()])
+    """Player word valid → classifier fires noun_attempt(word) → validate
+    runs the chain check → bot picks deterministically. Uses the real
+    554-word dictionary so we know follow-ups exist for any letter."""
+    fake = fake_llm([enter_game_call()])
     await invoke(graph, "давай поиграем")
     bot_first = _state_game(graph)["used"][0]
     required = spike.required_start(bot_first)
@@ -186,6 +194,7 @@ async def test_valid_player_move_advances_chain(fake_llm, graph):
         pytest.skip(f"no follow-up in dict for «{required}» (bot picked {bot_first!r})")
     player_word = candidates[0]
     next_required = spike.required_start(player_word)
+    fake._responses.append(noun_attempt_call(word=player_word))
     result = await invoke(graph, player_word)
     used = result["game"]["used"]
     assert used[0] == bot_first
@@ -197,59 +206,47 @@ async def test_valid_player_move_advances_chain(fake_llm, graph):
 
 @pytest.mark.usefixtures("small_dict")
 async def test_player_wrong_letter_does_not_advance(fake_llm, graph):
-    fake_llm(
-        [
-            enter_game_call(),
-            no_tool_reply(),  # classifier: no tool, pass to validate
-        ]
-    )
+    fake = fake_llm([enter_game_call()])
     await invoke(graph, "давай")
-    # Bot's first word starts with some letter L; player must answer with
-    # L. We send something that almost certainly won't match (single char
-    # not in any required letter we care about).
     bot_first = _state_game(graph)["used"][0]
     required = spike.required_start(bot_first)
     bad_letter = "ы" if required != "ы" else "э"
-    # Find a Cyrillic word starting with `bad_letter` (it's not in the
-    # small_dict, but extract_word doesn't care; validate compares letters).
-    fake_llm_again_msg = f"{bad_letter}нечто"
-    result = await invoke(graph, fake_llm_again_msg)
+    # The classifier sees a noun attempt (it doesn't check the chain rule
+    # itself); validate then rejects on the starting letter.
+    bad_word = f"{bad_letter}нечто"
+    fake._responses.append(noun_attempt_call(word=bad_word))
+    result = await invoke(graph, bad_word)
     assert result["game"]["last_cheat"] == "wrong_letter"
-    assert fake_llm_again_msg not in result["game"]["used"]
+    assert bad_word not in result["game"]["used"]
     assert f"начинаться на «{required}»" in result["last_bot_text"]
 
 
 @pytest.mark.usefixtures("small_dict")
 async def test_player_repeat_does_not_advance(fake_llm, graph):
-    fake_llm(
-        [
-            enter_game_call(),
-            no_tool_reply(),  # classifier when player repeats
-        ]
-    )
+    fake = fake_llm([enter_game_call()])
     await invoke(graph, "давай")
     bot_first = _state_game(graph)["used"][0]
-    result = await invoke(graph, bot_first)  # echo the bot's word
+    # Player echoes the bot's word — classifier accepts as a noun attempt,
+    # validate rejects as a repeat.
+    fake._responses.append(noun_attempt_call(word=bot_first))
+    result = await invoke(graph, bot_first)
     assert result["game"]["last_cheat"] == "repeat"
     assert result["game"]["used"] == [bot_first]  # unchanged
     assert "уже было" in result["last_bot_text"]
 
 
 @pytest.mark.usefixtures("small_dict")
-async def test_gibberish_does_not_advance_chain(fake_llm, graph):
-    """Regression: gibberish must terminate at "не расслышал"."""
-    fake_llm(
-        [
-            enter_game_call(),
-            no_tool_reply(),
-        ]
-    )
+async def test_gibberish_classifier_scolds(fake_llm, graph):
+    """Gibberish reaches the classifier, which fires not_a_noun. No more
+    "не расслышал" fallback — the scold is the standard not_a_noun message."""
+    fake_llm([enter_game_call(), not_a_noun_call()])
     await invoke(graph, "давай")
     used_before = list(_state_game(graph)["used"])
     result = await invoke(graph, "wow ???")
-    assert result["game"]["last_cheat"] == "no_word"
+    assert result["game"] is not None
+    assert result["game"]["last_cheat"] == "not_a_noun"
     assert result["game"]["used"] == used_before
-    assert "не расслышал" in result["last_bot_text"]
+    assert "существительное" in result["last_bot_text"]
 
 
 # --------------------------------------------------------------- tool intents
@@ -292,6 +289,22 @@ async def test_not_a_noun_classifier_skips_chain_validation(fake_llm, graph):
     assert result["game"]["last_cheat"] == "not_a_noun"
 
 
+@pytest.mark.usefixtures("small_dict")
+async def test_oblique_pronoun_той_does_not_advance_chain(fake_llm, graph):
+    """Regression: «той» is an oblique-case demonstrative pronoun, not a
+    noun in именительный падеж. Production bug: it slipped through as a
+    word-move and the bot then surrendered on «й». The classifier must
+    fire not_a_noun so the chain stays put."""
+    fake_llm([enter_game_call(), not_a_noun_call()])
+    await invoke(graph, "давай")
+    used_before = list(_state_game(graph)["used"])
+    result = await invoke(graph, "той")
+    assert result["game"] is not None
+    assert result["game"]["used"] == used_before
+    assert result["game"]["last_cheat"] == "not_a_noun"
+    assert "существительное" in result["last_bot_text"]
+
+
 async def test_valid_move_after_not_a_noun_advances_chain(fake_llm, graph):
     """Regression: a `not_a_noun` turn sets `game.last_cheat`, which is
     a per-turn marker. On the FOLLOWING turn, if the player plays a
@@ -299,7 +312,7 @@ async def test_valid_move_after_not_a_noun_advances_chain(fake_llm, graph):
     stale cheat — otherwise `words_validate` never runs and the handler
     falls back to "Слушаю." (real-world report: bot replied "слушаю"
     to "лампа" after a streak of gibberish)."""
-    fake_llm([enter_game_call(), not_a_noun_call(), no_tool_reply()])
+    fake = fake_llm([enter_game_call(), not_a_noun_call()])
     await invoke(graph, "давай")
     bot_first = _state_game(graph)["used"][0]
     required = spike.required_start(bot_first)
@@ -311,6 +324,7 @@ async def test_valid_move_after_not_a_noun_advances_chain(fake_llm, graph):
     await invoke(graph, "иририри")  # classifier → not_a_noun, sets stale cheat
     assert _state_game(graph)["last_cheat"] == "not_a_noun"
     player_word = candidates[0]
+    fake._responses.append(noun_attempt_call(word=player_word))
     result = await invoke(graph, player_word)
     used = result["game"]["used"]
     assert used[0] == bot_first
@@ -358,12 +372,12 @@ async def test_single_word_player_input_does_not_trigger_challenge(fake_llm, gra
     Real-world report: player typed «вертля» as a (bad) move; the
     classifier emitted `challenge_word`, the bot resolved its previous
     word as real, and declared victory. This test pins the contract:
-    given the (now-tightened) classifier returns no tool call for a
-    bare-word reply, the turn must NOT end with «Я выиграл»."""
+    when the classifier fires noun_attempt for a bare invented word,
+    the turn must NOT end with «Я выиграл»."""
     fake_llm(
         [
             enter_game_call(),
-            no_tool_reply(),  # «вертля» → classifier passes through
+            noun_attempt_call(word="вертля"),  # invented but noun-shaped
         ]
     )
     await invoke(graph, "давай")
@@ -372,10 +386,9 @@ async def test_single_word_player_input_does_not_trigger_challenge(fake_llm, gra
     # Game must still be alive — no challenge resolution fired.
     assert result["game"] is not None
     assert "Я выиграл" not in (result.get("last_bot_text") or "")
-    # «вертля» starts with 'в', which isn't in small_dict's by_letter
-    # keys, so validate will scold for the wrong starting letter (or
-    # advance if it happened to match). Either is fine — the point is we
-    # didn't end up in the challenge-resolution branch.
+    # «вертля» starts with 'в'; validate will either scold for wrong
+    # starting letter or advance, depending on small_dict. Either is
+    # fine — the point is we didn't end up in resolve_challenge.
     assert _state_game(graph)["used"][0] == bot_first
 
 
@@ -434,12 +447,7 @@ async def test_bot_surrenders_when_no_words_left_for_letter(
     monkeypatch.setattr(spike, "_DICTIONARY_CACHE", fixture)
     monkeypatch.setattr(spike, "_RNG", random.Random(0))
 
-    fake_llm(
-        [
-            enter_game_call(),
-            no_tool_reply(),  # player's word goes through validate
-        ]
-    )
+    fake = fake_llm([enter_game_call()])
     await invoke(graph, "давай")
     # Bot picked "море" or "ель"; force a chain dead-end by playing
     # something ending in a letter not in fixture.
@@ -451,6 +459,7 @@ async def test_bot_surrenders_when_no_words_left_for_letter(
         player_word = "ехидна"  # starts 'е' (matches), ends 'а' → empty pool
     else:
         player_word = "лиса"  # starts 'л' (matches), ends 'а' → empty pool
+    fake._responses.append(noun_attempt_call(word=player_word))
     result = await invoke(graph, player_word)
     assert result["game"] is None
     assert "Твоя победа" in result["last_bot_text"]

@@ -599,7 +599,9 @@ async def enter_game_node(state: DialogState) -> dict:
     """LLM emitted `enter_game(words)`. Set up the game state and let the
     bot pick the first word via the shared words_intro routine."""
     del state
-    fresh = words_game.GameState(used=[], required_letter=None, last_cheat=None)
+    fresh = words_game.GameState(
+        used=[], required_letter=None, last_cheat=None, candidate_word=None
+    )
     intro_update = await words_game.words_intro({"game": fresh})
     # words_intro returns {game, messages, last_bot_text} — that's
     # already a DialogState-compatible delta.

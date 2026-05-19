@@ -16,13 +16,15 @@ RUN useradd -u 1000 -m -s /bin/bash app
 
 WORKDIR /app
 COPY --from=builder /app/.venv /app/.venv
-COPY --chown=app:app app ./app
-COPY --chown=app:app migrations ./migrations
-COPY --chown=app:app scripts ./scripts
-COPY --chown=app:app alembic.ini ./
-COPY --chown=app:app config.example.toml ./config.toml
+# Ordered least → most frequently changed so an edit to `app/` invalidates
+# as few downstream layers as possible.
 COPY --chown=app:app docker/entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
+COPY --chown=app:app alembic.ini ./
+COPY --chown=app:app config.example.toml ./config.toml
+COPY --chown=app:app scripts ./scripts
+COPY --chown=app:app migrations ./migrations
+COPY --chown=app:app app ./app
 
 USER app
 ENV PATH="/app/.venv/bin:$PATH" \

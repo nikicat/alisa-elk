@@ -350,6 +350,35 @@ async def test_challenge_loses_when_bot_word_is_in_dictionary(fake_llm, graph):
     assert bot_first in result["last_bot_text"]
 
 
+@pytest.mark.usefixtures("small_dict")
+async def test_single_word_player_input_does_not_trigger_challenge(fake_llm, graph):
+    """Regression: a single-word player reply — even an invented one like
+    «вертля» — must reach `words_validate`, not `words_resolve_challenge`.
+
+    Real-world report: player typed «вертля» as a (bad) move; the
+    classifier emitted `challenge_word`, the bot resolved its previous
+    word as real, and declared victory. This test pins the contract:
+    given the (now-tightened) classifier returns no tool call for a
+    bare-word reply, the turn must NOT end with «Я выиграл»."""
+    fake_llm(
+        [
+            enter_game_call(),
+            no_tool_reply(),  # «вертля» → classifier passes through
+        ]
+    )
+    await invoke(graph, "давай")
+    bot_first = _state_game(graph)["used"][0]
+    result = await invoke(graph, "вертля")
+    # Game must still be alive — no challenge resolution fired.
+    assert result["game"] is not None
+    assert "Я выиграл" not in (result.get("last_bot_text") or "")
+    # «вертля» starts with 'в', which isn't in small_dict's by_letter
+    # keys, so validate will scold for the wrong starting letter (or
+    # advance if it happened to match). Either is fine — the point is we
+    # didn't end up in the challenge-resolution branch.
+    assert _state_game(graph)["used"][0] == bot_first
+
+
 async def test_challenge_wins_when_bot_word_is_not_in_dictionary(
     fake_llm, monkeypatch, graph
 ):

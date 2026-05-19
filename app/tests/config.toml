@@ -1,0 +1,21 @@
+[llm]
+temperature = 0.6
+max_tokens = 280
+classifier_max_tokens = 16
+first_wait_timeout_s = 0.05
+subsequent_wait_timeout_s = 0.05
+max_wait_turns = 3
+
+[persona]
+wait_phrases = [
+    "wait-1",
+    "wait-2",
+    "wait-3",
+]
+give_up_phrase = "give-up"
+
+[memory]
+recent_turns = 4
+
+[pagination]
+chunk_chars = 1000

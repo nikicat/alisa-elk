@@ -1,5 +1,7 @@
 """Pytest fixtures: in-memory SQLite, configured FastAPI app, MockLLM injection."""
 
+from pathlib import Path
+
 import pytest
 from fastapi.testclient import TestClient
 from langgraph.checkpoint.memory import MemorySaver
@@ -19,6 +21,7 @@ from app.wait import PendingTaskRegistry, reset_registry_for_tests
 
 TEST_SKILL_ID = "test-skill-id"
 TEST_WEBHOOK_SECRET = "test-secret"
+TEST_CONFIG_TOML = str(Path(__file__).parent / "config.toml")
 
 
 @pytest.fixture(autouse=True)
@@ -30,7 +33,7 @@ def _env(monkeypatch, tmp_path):
     monkeypatch.setenv("LLM_MODEL", "mock")
     monkeypatch.setenv("DB_URL", "sqlite:///:memory:")
     monkeypatch.setenv("LOG_LEVEL", "WARNING")
-    monkeypatch.setenv("CONFIG_TOML_PATH", "config.toml")
+    monkeypatch.setenv("CONFIG_TOML_PATH", TEST_CONFIG_TOML)
     cfg_mod.reset_caches()
     yield
     cfg_mod.reset_caches()

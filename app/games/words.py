@@ -126,7 +126,9 @@ class GameState(TypedDict):
     # Per-turn marker read by route_after_classify / route_after_validate.
     # "challenge" routes to resolve_challenge; any other truthy value ends
     # the turn after the scold message is set.
-    last_cheat: str | None  # None | "not_a_noun" | "wrong_letter" | "repeat" | "challenge"
+    last_cheat: (
+        str | None
+    )  # None | "not_a_noun" | "wrong_letter" | "repeat" | "challenge"
     # Set by words_classify_player when the LLM fires noun_attempt with an
     # extracted candidate; consumed (and cleared) by words_validate.
     candidate_word: str | None
@@ -312,8 +314,7 @@ def _not_a_noun_update(game: GameState) -> dict:
         "game": {**game, "last_cheat": "not_a_noun", "candidate_word": None},
         "user_input": None,
         "last_bot_text": (
-            "Это не существительное в именительном падеже "
-            f"единственного числа.{tail}"
+            f"Это не существительное в именительном падеже единственного числа.{tail}"
         ),
     }
 

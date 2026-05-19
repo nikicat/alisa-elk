@@ -155,9 +155,7 @@ def noun_attempt_call(word: str) -> AIMessage:
     """Classifier output meaning 'player tried to name a noun (= word)'."""
     return AIMessage(
         content="",
-        tool_calls=[
-            {"name": "noun_attempt", "args": {"word": word}, "id": "tc-noun"}
-        ],
+        tool_calls=[{"name": "noun_attempt", "args": {"word": word}, "id": "tc-noun"}],
     )
 
 

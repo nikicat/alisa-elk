@@ -317,7 +317,8 @@ async def words_classify_player(state: DialogState) -> dict:
             "game": {**game, "last_cheat": "not_a_noun"},
             "user_input": None,
             "last_bot_text": (
-                "Это не существительное в именительном падеже " f"единственного числа.{tail}"
+                "Это не существительное в именительном падеже "
+                f"единственного числа.{tail}"
             ),
         }
     return {}  # pass-through to words_validate
@@ -427,7 +428,9 @@ async def words_bot_turn(state: DialogState) -> dict:
         if w not in used
     ]
     if not candidates:
-        slog.info("words_bot_turn", outcome="surrender", required=game["required_letter"])
+        slog.info(
+            "words_bot_turn", outcome="surrender", required=game["required_letter"]
+        )
         return {
             "game": None,
             "last_bot_text": (

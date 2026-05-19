@@ -125,9 +125,19 @@ async def route(req: AliceRequest, deps: HandlerDeps) -> AliceResponse:
     inputs = _inputs_from_req(req)
     result = await deps.graph.ainvoke(inputs, config=config)
 
-    text = result.get("last_bot_text") or "Слушаю."
+    raw_text = result.get("last_bot_text")
+    text = raw_text or "Слушаю."
     end_session = bool(result.get("end_session"))
     buttons = result.get("response_buttons")
+
+    log.info(
+        "bot_reply",
+        text=text,
+        fallback=raw_text is None,
+        end_session=end_session,
+        session_id=req.session.session_id,
+        message_id=req.session.message_id,
+    )
 
     session_state = _bridge_session_state(req, result)
     return _make(

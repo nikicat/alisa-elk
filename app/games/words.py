@@ -40,13 +40,17 @@ this into the main dispatch in step (3).
 from __future__ import annotations
 
 import argparse
+import contextlib
 import random
 import re
 import sys
+import time
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Annotated, Literal, TypedDict, cast
 
+import structlog
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage
 from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import tool
@@ -57,6 +61,8 @@ from langgraph.graph.message import add_messages
 
 from app import persona
 from app.config import get_settings
+
+log = structlog.get_logger(__name__)
 
 SKIP_LETTERS = frozenset({"ь", "ъ", "ы"})
 
@@ -151,8 +157,21 @@ def challenge_word() -> str:
     return "challenged"
 
 
+@tool
+def not_a_noun() -> str:
+    """Вызови, когда реплика игрока — это НЕ существительное в
+    именительном падеже единственного числа. Сюда подходит бессмыслица
+    («иририри», «абвгд»), глагол («бегать», «играть»), прилагательное
+    («красивый»), множественное число («штаны», «ножницы»), любой
+    другой падеж кроме именительного («книги», «столу»), имя собственное
+    или географическое название («Москва», «Иван»). Если в реплике
+    встречается ПОДХОДЯЩЕЕ существительное (даже с любым предисловием:
+    «мой ответ — яблоко»), не вызывай этот инструмент."""
+    return "not a noun"
+
+
 IDLE_TOOLS = [enter_game, exit_game]
-IN_GAME_TOOLS = [challenge_word, exit_game]
+IN_GAME_TOOLS = [challenge_word, exit_game, not_a_noun]
 
 
 # ---------------------------------------------------------------- helpers
@@ -170,6 +189,13 @@ def required_start(word: str) -> str | None:
 def extract_word(text: str) -> str | None:
     matches = re.findall(r"[а-яё]{2,}", text.lower())
     return matches[-1] if matches else None
+
+
+@contextlib.contextmanager
+def _elapsed_ms() -> Iterator[Callable[[], int]]:
+    """Yield a callable that returns ms elapsed since the `with` was entered."""
+    t0 = time.monotonic()
+    yield lambda: int((time.monotonic() - t0) * 1000)
 
 
 def make_llm(*, temperature: float, max_tokens: int) -> ChatOpenAI:
@@ -222,9 +248,15 @@ async def idle_llm(state: DialogState) -> dict:
 
 async def words_intro(state: DialogState) -> dict:
     """Bot's first word — picked uniformly from the dictionary."""
+    slog = log.bind(session_id=state.get("session_id"))
     dictionary = load_dictionary()
     pool = sorted(dictionary.all_words)
     word = _RNG.choice(pool)
+    slog.info(
+        "words_intro",
+        bot_word=word,
+        required_letter=required_start(word),
+    )
     return {
         "game": GameState(
             used=[word], required_letter=required_start(word), last_cheat=None
@@ -243,6 +275,7 @@ async def words_classify_player(state: DialogState) -> dict:
     word move. The classifier is the only LLM call inside an active game.
     """
     raw = (state.get("user_input") or "").strip()
+    slog = log.bind(session_id=state.get("session_id"))
     if not raw:
         return {}  # nothing to classify
     llm = make_llm(temperature=0.0, max_tokens=24).bind_tools(IN_GAME_TOOLS)
@@ -250,12 +283,20 @@ async def words_classify_player(state: DialogState) -> dict:
         "Идёт игра «в слова». Сообщение ниже — реплика собеседника. "
         "Если он сомневается в твоём предыдущем слове или просит проверить "
         "его — вызови challenge_word. Если он хочет выйти из игры или "
-        "закончить — вызови exit_game. Иначе считай, что он сделал свой "
-        "ход в игре, и ничего не вызывай — просто ответь любым словом."
+        "закончить — вызови exit_game. Если его реплика не содержит "
+        "существительного в именительном падеже единственного числа — "
+        "вызови not_a_noun. Иначе считай, что он сделал ход в игре, и "
+        "ничего не вызывай."
     )
-    reply = await llm.ainvoke([sys_msg, HumanMessage(raw)])
-    tool_calls = getattr(reply, "tool_calls", None) or []
-    name = tool_calls[0].get("name") if tool_calls else None
+    with _elapsed_ms() as ms:
+        try:
+            reply = await llm.ainvoke([sys_msg, HumanMessage(raw)])
+        except Exception as exc:
+            slog.warning("words_classify_error", error=str(exc), llm_ms=ms())
+            return {}  # fall through to words_validate
+        tool_calls = getattr(reply, "tool_calls", None) or []
+        name = tool_calls[0].get("name") if tool_calls else None
+        slog.info("words_classify", intent=name or "word_move", llm_ms=ms())
     game = state.get("game")
     if name == "challenge_word" and game is not None:
         return {"game": {**game, "last_cheat": "challenge"}}
@@ -265,6 +306,16 @@ async def words_classify_player(state: DialogState) -> dict:
             "user_input": None,
             "last_bot_text": "Хорошо, заканчиваем игру. Возвращаемся к беседе.",
         }
+    if name == "not_a_noun" and game is not None:
+        required = game["required_letter"] or ""
+        tail = f" Назови существительное на «{required}»." if required else ""
+        return {
+            "game": {**game, "last_cheat": "not_a_noun"},
+            "user_input": None,
+            "last_bot_text": (
+                "Это не существительное в именительном падеже " f"единственного числа.{tail}"
+            ),
+        }
     return {}  # pass-through to words_validate
 
 
@@ -272,8 +323,10 @@ async def words_resolve_challenge(state: DialogState) -> dict:
     """Look up the bot's last word in the dictionary; declare a winner."""
     game = state.get("game")
     assert game is not None
+    slog = log.bind(session_id=state.get("session_id"))
     used = game["used"]
     if not used:
+        slog.info("words_challenge", outcome="nothing_to_check")
         return {
             "game": {**game, "last_cheat": None},
             "user_input": None,
@@ -282,6 +335,7 @@ async def words_resolve_challenge(state: DialogState) -> dict:
     bot_word = used[-1]
     dictionary = load_dictionary()
     if bot_word in dictionary.all_words:
+        slog.info("words_challenge", outcome="bot_wins", bot_word=bot_word)
         return {
             "game": None,
             "user_input": None,
@@ -290,6 +344,7 @@ async def words_resolve_challenge(state: DialogState) -> dict:
                 "Ты ошибся, лес тебе не верит. Я выиграл."
             ),
         }
+    slog.info("words_challenge", outcome="player_wins", bot_word=bot_word)
     return {
         "game": None,
         "user_input": None,
@@ -300,22 +355,25 @@ async def words_resolve_challenge(state: DialogState) -> dict:
 
 
 async def words_validate(state: DialogState) -> dict:
-    """Pure chain-rule logic. Exit and challenge intents are handled
-    upstream by `words_classify_player` via tool calls."""
+    """Pure chain-rule logic. Exit, challenge, and noun-validity checks
+    are handled upstream by `words_classify_player` via tool calls."""
     game = state["game"]
     assert game is not None
+    slog = log.bind(session_id=state.get("session_id"))
     raw = (state.get("user_input") or "").strip().lower()
     user_word = extract_word(raw)
     if user_word is None:
         # Mark as a "cheat" so route_after_validate ends the turn here
         # instead of falling through to words_bot_turn (which would
         # overwrite our message with a fresh bot word).
+        slog.info("words_validate", outcome="no_word", raw=raw)
         return {
             "game": {**game, "last_cheat": "no_word"},
             "user_input": None,
             "last_bot_text": "Я не расслышал слова. Назови ещё раз.",
         }
     if user_word in game["used"]:
+        slog.info("words_validate", outcome="repeat", player_word=user_word)
         return {
             "game": {**game, "last_cheat": "repeat"},
             "user_input": None,
@@ -325,6 +383,12 @@ async def words_validate(state: DialogState) -> dict:
         }
     expected = game["required_letter"]
     if expected and not user_word.startswith(expected):
+        slog.info(
+            "words_validate",
+            outcome="wrong_letter",
+            player_word=user_word,
+            required=expected,
+        )
         return {
             "game": {**game, "last_cheat": "wrong_letter"},
             "user_input": None,
@@ -332,6 +396,7 @@ async def words_validate(state: DialogState) -> dict:
                 f"Слово должно начинаться на «{expected}». Попробуй ещё раз."
             ),
         }
+    slog.info("words_validate", outcome="accepted", player_word=user_word)
     # Valid player move — record and pass turn to bot.
     return {
         "game": GameState(
@@ -349,6 +414,7 @@ async def words_bot_turn(state: DialogState) -> dict:
     with the required letter. If none remain, surrender (player wins)."""
     game = state["game"]
     assert game is not None and game["required_letter"] is not None
+    slog = log.bind(session_id=state.get("session_id"))
     dictionary = load_dictionary()
     used: set[str] = set(game["used"])
     candidates = [
@@ -357,6 +423,7 @@ async def words_bot_turn(state: DialogState) -> dict:
         if w not in used
     ]
     if not candidates:
+        slog.info("words_bot_turn", outcome="surrender", required=game["required_letter"])
         return {
             "game": None,
             "last_bot_text": (
@@ -365,6 +432,12 @@ async def words_bot_turn(state: DialogState) -> dict:
             ),
         }
     word = _RNG.choice(candidates)
+    slog.info(
+        "words_bot_turn",
+        outcome="played",
+        bot_word=word,
+        required_letter=required_start(word),
+    )
     return {
         "game": GameState(
             used=game["used"] + [word],
@@ -406,8 +479,11 @@ def route_after_classify(
     g = state.get("game")
     if g is None:
         return "done"  # exit_game tool fired
-    if g.get("last_cheat") == "challenge":
+    cheat = g.get("last_cheat")
+    if cheat == "challenge":
         return "resolve_challenge"
+    if cheat:
+        return "done"  # classifier-set cheat (e.g. not_a_noun) — turn already rendered
     return "to_validate"
 
 

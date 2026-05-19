@@ -19,6 +19,8 @@ Failure modes exercised:
     → player loses
   - player intent classified as challenge_word, bot's word is NOT in
     dict → player wins
+  - player intent classified as not_a_noun (gibberish, plural, verb)
+    → chain does not advance, bot scolds and waits
   - bot exhausts its dictionary pool for the required letter → surrenders
   - idle persona reply with no tool call ends the turn
 """
@@ -139,6 +141,13 @@ def challenge_call() -> AIMessage:
     )
 
 
+def not_a_noun_call() -> AIMessage:
+    return AIMessage(
+        content="",
+        tool_calls=[{"name": "not_a_noun", "args": {}, "id": "tc-not-noun"}],
+    )
+
+
 def no_tool_reply(text: str = "ход") -> AIMessage:
     """Classifier output meaning 'not a tool, treat as a normal move'."""
     return AIMessage(content=text)
@@ -244,6 +253,43 @@ async def test_gibberish_does_not_advance_chain(fake_llm, graph):
 
 
 # --------------------------------------------------------------- tool intents
+
+
+@pytest.mark.usefixtures("small_dict")
+async def test_not_a_noun_tool_does_not_advance_chain(fake_llm, graph):
+    """Classifier emits not_a_noun → chain stays put, bot scolds, game
+    keeps going so the player can try again."""
+    fake_llm([enter_game_call(), not_a_noun_call()])
+    await invoke(graph, "давай")
+    used_before = list(_state_game(graph)["used"])
+    required_before = _state_game(graph)["required_letter"]
+    result = await invoke(graph, "иририри")
+    assert result["game"] is not None  # still in game
+    assert result["game"]["used"] == used_before
+    assert result["game"]["required_letter"] == required_before
+    assert result["game"]["last_cheat"] == "not_a_noun"
+    assert "существительное" in result["last_bot_text"]
+    assert f"«{required_before}»" in result["last_bot_text"]
+
+
+@pytest.mark.usefixtures("small_dict")
+async def test_not_a_noun_classifier_skips_chain_validation(fake_llm, graph):
+    """not_a_noun must terminate the turn even when the input would
+    otherwise pass chain-rule validation (right starting letter + new
+    word). Regression: route_after_classify needs to honour the cheat."""
+    fake_llm([enter_game_call(), not_a_noun_call()])
+    await invoke(graph, "давай")
+    bot_first = _state_game(graph)["used"][0]
+    required = _state_game(graph)["required_letter"]
+    assert required is not None
+    # A made-up plural-like form that starts with the right letter and
+    # isn't `bot_first` — validate would happily accept it without the
+    # classifier veto.
+    fake_plural = f"{required}штаны"
+    result = await invoke(graph, fake_plural)
+    assert result["game"] is not None
+    assert result["game"]["used"] == [bot_first]
+    assert result["game"]["last_cheat"] == "not_a_noun"
 
 
 @pytest.mark.usefixtures("small_dict")

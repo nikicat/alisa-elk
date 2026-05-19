@@ -135,8 +135,11 @@ def route_after_classify(
     g = state.get("game")
     if g is None:
         return "done"  # exit_game tool fired
-    if g.get("last_cheat") == "challenge":
+    cheat = g.get("last_cheat")
+    if cheat == "challenge":
         return "resolve_challenge"
+    if cheat:
+        return "done"  # classifier-set cheat (e.g. not_a_noun) — turn already rendered
     return "to_validate"
 
 

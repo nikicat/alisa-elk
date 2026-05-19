@@ -19,7 +19,8 @@ COPY --from=builder /app/.venv /app/.venv
 COPY --chown=app:app app ./app
 COPY --chown=app:app migrations ./migrations
 COPY --chown=app:app scripts ./scripts
-COPY --chown=app:app alembic.ini config.toml ./
+COPY --chown=app:app alembic.ini ./
+COPY --chown=app:app config.example.toml ./config.toml
 COPY --chown=app:app docker/entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
 
@@ -30,7 +31,7 @@ ENV PATH="/app/.venv/bin:$PATH" \
 
 EXPOSE 8080
 
-HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
+HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --start-interval=2s --retries=3 \
     CMD python -c "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8080/healthz',timeout=3).status==200 else 1)" \
     || exit 1
 

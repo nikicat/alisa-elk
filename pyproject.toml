@@ -12,6 +12,9 @@ dependencies = [
     "pydantic>=2.10",
     "pydantic-settings>=2.7",
     "structlog>=24.4",
+    "langgraph>=0.2",
+    "langchain-openai>=0.2",
+    "langgraph-checkpoint-sqlite>=2.0",
 ]
 
 [dependency-groups]
@@ -22,11 +25,6 @@ dev = [
     "httpx>=0.28",
     "ruff>=0.8",
     "pyright>=1.1.409",
-    # LangGraph spike — only loaded by scripts/wordsgame_spike.py.
-    # Promote to runtime deps if/when handler.py migrates to LangGraph.
-    "langgraph>=0.2",
-    "langchain-openai>=0.2",
-    "langgraph-checkpoint-sqlite>=2.0",
     # `langgraph dev` — local Studio for visualising/stepping the FSM.
     # The [inmem] extra brings the in-memory dev server (no SaaS).
     "langgraph-cli[inmem]>=0.1",

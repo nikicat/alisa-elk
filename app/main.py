@@ -6,6 +6,7 @@ import structlog
 from fastapi import Depends, FastAPI, HTTPException, Path, Request
 from fastapi.responses import JSONResponse
 from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
+from sqlalchemy.engine.url import make_url
 
 from app.config import get_settings
 from app.db import get_session_factory, init_engine
@@ -14,9 +15,6 @@ from app.handler import HandlerDeps, route
 from app.llm import OpenAIRouterClient
 from app.schemas import AliceRequest, AliceResponse
 from app.wait import get_registry
-
-# CHECKPOINT SCHEMA: v1.2.x  (langgraph + langgraph-checkpoint-sqlite v3.x)
-DIALOG_DB_PATH = "data/dialog.db"
 
 
 def configure_logging(level: str) -> None:
@@ -56,8 +54,16 @@ async def lifespan(app: FastAPI):  # noqa: ARG001
     init_engine()
 
     async with AsyncExitStack() as stack:
+        # LangGraph checkpoints live alongside the app tables in the same
+        # sqlite file; their table names don't collide. Only sqlite DB_URLs
+        # are supported here — switch to a different saver if you migrate.
+        sqlite_path = make_url(settings.DB_URL).database
+        if not sqlite_path:
+            raise RuntimeError(
+                f"DB_URL must point at a sqlite file, got {settings.DB_URL!r}"
+            )
         saver = await stack.enter_async_context(
-            AsyncSqliteSaver.from_conn_string(DIALOG_DB_PATH)
+            AsyncSqliteSaver.from_conn_string(sqlite_path)
         )
         _lifespan_state["graph"] = build_parent_graph(saver)
         try:

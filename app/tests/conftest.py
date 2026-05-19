@@ -25,7 +25,7 @@ TEST_CONFIG_TOML = str(Path(__file__).parent / "config.toml")
 
 
 @pytest.fixture(autouse=True)
-def _env(monkeypatch, tmp_path):
+def _env(monkeypatch, tmp_path):  # pyright: ignore[reportUnusedFunction, reportUnusedParameter]
     monkeypatch.setenv("YANDEX_SKILL_ID", TEST_SKILL_ID)
     monkeypatch.setenv("WEBHOOK_PATH_SECRET", TEST_WEBHOOK_SECRET)
     monkeypatch.setenv("LLM_BASE_URL", "http://unused")
@@ -104,7 +104,7 @@ def deps(session_factory, mock_llm, registry, dialog_graph):
 def app_client(monkeypatch, session_factory, mock_llm, registry, dialog_graph):
     """FastAPI TestClient with mocked LLM, in-memory DB, isolated registry."""
 
-    def fake_init_engine(db_url=None):  # noqa: ARG001
+    def fake_init_engine(*_args, **_kwargs):
         return session_factory.kw["bind"]
 
     monkeypatch.setattr(db_mod, "init_engine", fake_init_engine)

@@ -131,6 +131,7 @@ def _empty_output() -> dict[str, Any]:
 
 async def turn_init(state: DialogState, config: RunnableConfig) -> dict:
     """Reset per-turn output fields and stamp wall-clock start time."""
+    del state, config  # langgraph node contract — args are required positionally
     return {
         **_empty_output(),
         "started_at": time.monotonic(),
@@ -237,7 +238,7 @@ async def check_pending(state: DialogState, config: RunnableConfig) -> dict:
 
 def _apply_task_result(
     state: DialogState,
-    pending: dict,
+    pending: PendingState,
     task: asyncio.Task[LLMResult],
     deps: HandlerDeps,
     cfg: dict,
@@ -418,15 +419,18 @@ async def linking_node(state: DialogState, config: RunnableConfig) -> dict:
     return {"last_bot_text": persona.UNLINKED_QUESTION}
 
 
-async def greeting_node(state: DialogState, config: RunnableConfig) -> dict:  # noqa: ARG001
+async def greeting_node(state: DialogState, config: RunnableConfig) -> dict:
+    del state, config
     return {"last_bot_text": persona.GREETING}
 
 
-async def silence_node(state: DialogState, config: RunnableConfig) -> dict:  # noqa: ARG001
+async def silence_node(state: DialogState, config: RunnableConfig) -> dict:
+    del state, config
     return {"last_bot_text": "Слушаю."}
 
 
-async def help_node(state: DialogState, config: RunnableConfig) -> dict:  # noqa: ARG001
+async def help_node(state: DialogState, config: RunnableConfig) -> dict:
+    del state, config
     return {"last_bot_text": persona.HELP_TEXT}
 
 
@@ -591,33 +595,28 @@ async def idle_llm(state: DialogState, config: RunnableConfig) -> dict:
 # ---------- words subgraph nodes (wired via state.game) ----------
 
 
-async def enter_game_node(state: DialogState, config: RunnableConfig) -> dict:  # noqa: ARG001
+async def enter_game_node(state: DialogState) -> dict:
     """LLM emitted `enter_game(words)`. Set up the game state and let the
     bot pick the first word via the shared words_intro routine."""
+    del state
     fresh = words_game.GameState(used=[], required_letter=None, last_cheat=None)
-    intro_update = await words_game.words_intro({"game": fresh})  # type: ignore[arg-type]
+    intro_update = await words_game.words_intro({"game": fresh})
     # words_intro returns {game, messages, last_bot_text} — that's
     # already a DialogState-compatible delta.
     return intro_update
 
 
-async def words_classify_player_node(
-    state: DialogState,
-    config: RunnableConfig,
-) -> dict:
-    return await words_game.words_classify_player(state)  # type: ignore[arg-type]
+async def words_classify_player_node(state: DialogState) -> dict:
+    return await words_game.words_classify_player(state)
 
 
-async def words_validate_node(state: DialogState, config: RunnableConfig) -> dict:
-    return await words_game.words_validate(state)  # type: ignore[arg-type]
+async def words_validate_node(state: DialogState) -> dict:
+    return await words_game.words_validate(state)
 
 
-async def words_bot_turn_node(state: DialogState, config: RunnableConfig) -> dict:
-    return await words_game.words_bot_turn(state)  # type: ignore[arg-type]
+async def words_bot_turn_node(state: DialogState) -> dict:
+    return await words_game.words_bot_turn(state)
 
 
-async def words_resolve_challenge_node(
-    state: DialogState,
-    config: RunnableConfig,
-) -> dict:
-    return await words_game.words_resolve_challenge(state)  # type: ignore[arg-type]
+async def words_resolve_challenge_node(state: DialogState) -> dict:
+    return await words_game.words_resolve_challenge(state)

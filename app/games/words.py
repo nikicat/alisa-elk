@@ -123,7 +123,11 @@ class GameState(TypedDict):
     last_cheat: str | None  # None | "wrong_letter" | "repeat"
 
 
-class DialogState(TypedDict):
+class DialogState(TypedDict, total=False):
+    # Matches `app.dialog.state.DialogState`'s totality so the parent
+    # graph can hand its state straight to these nodes without casts.
+    # session_id is read by logging but not declared here — it lives on
+    # the parent state, which is structurally a superset of this one.
     messages: Annotated[list[BaseMessage], add_messages]
     user_input: str | None
     game: GameState | None
@@ -357,7 +361,7 @@ async def words_resolve_challenge(state: DialogState) -> dict:
 async def words_validate(state: DialogState) -> dict:
     """Pure chain-rule logic. Exit, challenge, and noun-validity checks
     are handled upstream by `words_classify_player` via tool calls."""
-    game = state["game"]
+    game = state.get("game")
     assert game is not None
     slog = log.bind(session_id=state.get("session_id"))
     raw = (state.get("user_input") or "").strip().lower()
@@ -412,7 +416,7 @@ async def words_validate(state: DialogState) -> dict:
 async def words_bot_turn(state: DialogState) -> dict:
     """Deterministic bot move — pick any unused dictionary word starting
     with the required letter. If none remain, surrender (player wins)."""
-    game = state["game"]
+    game = state.get("game")
     assert game is not None and game["required_letter"] is not None
     slog = log.bind(session_id=state.get("session_id"))
     dictionary = load_dictionary()
@@ -490,7 +494,8 @@ def route_after_classify(
 # ---------------------------------------------------------------- graph
 
 
-async def _entry_router_node(state: DialogState) -> dict:  # noqa: ARG001
+async def _entry_router_node(state: DialogState) -> dict:
+    del state
     return {}  # pass-through; routing decision happens on the edge
 
 

@@ -94,7 +94,7 @@ def small_dict(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
-def _seeded_rng(monkeypatch):
+def _seeded_rng(monkeypatch):  # pyright: ignore[reportUnusedFunction]
     """Make `_RNG.choice` deterministic across tests."""
     monkeypatch.setattr(spike, "_RNG", random.Random(0))
 

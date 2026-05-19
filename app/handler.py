@@ -18,9 +18,6 @@ from langchain_core.runnables import RunnableConfig
 from sqlalchemy.orm import Session
 
 from app.llm import LLMClient
-from app.pagination import (
-    chunk_for_alice,  # noqa: F401 — re-exported for legacy imports
-)
 from app.schemas import AliceRequest, AliceResponse, Button, Response
 from app.wait import PendingTaskRegistry
 

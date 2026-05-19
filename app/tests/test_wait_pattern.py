@@ -31,7 +31,7 @@ FAST_CONFIG = {
 
 
 @pytest.fixture(autouse=True)
-def _fast_cfg(monkeypatch):
+def _fast_cfg(monkeypatch):  # pyright: ignore[reportUnusedFunction]
     monkeypatch.setattr(cfg_mod, "get_config", lambda: FAST_CONFIG)
 
 

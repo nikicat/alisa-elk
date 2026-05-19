@@ -35,7 +35,7 @@ FAST_CONFIG = {
 
 
 @pytest.fixture(autouse=True)
-def _fast_cfg(monkeypatch):
+def _fast_cfg(monkeypatch):  # pyright: ignore[reportUnusedFunction]
     monkeypatch.setattr(cfg_mod, "get_config", lambda: FAST_CONFIG)
 
 
@@ -74,7 +74,7 @@ def test_happy_path_linked_user(alice, db, mock_llm: MockLLMClient):
 
 
 def test_linking_flow_then_ask(alice, db, mock_llm: MockLLMClient):
-    user_id, code = _create_user_with_code(db)
+    _user_id, code = _create_user_with_code(db)
 
     # 1. First turn: unlinked greeting.
     _timed_say(alice, "")
